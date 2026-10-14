@@ -1,0 +1,82 @@
+﻿[
+  {
+    "id": 1,
+    "scenario": "OLX Reverse Charge Trap",
+    "text": "Maine advance Rs 5000 bhej diye hain OLX table ke liye. QR scan karke PIN dalo aur accept karo.",
+    "uri": "upi://pay?pa=fakeofficer99@ybl&pn=Army%20HQ%20Canteen&am=5000&cu=INR&mode=02",
+    "is_deception": true,
+    "expected_verdict": "CRITICAL_INTENT_DISPARITY"
+  },
+  {
+    "id": 2,
+    "scenario": "Fake Refund Processing",
+    "text": "Aapka Rs 2500 ka electricity refund approve ho gaya hai. Approve karke credit receive karo.",
+    "uri": "upi://pay?pa=refundbot@axisbank&pn=Discom%20Refund&am=2500&cu=INR",
+    "is_deception": true,
+    "expected_verdict": "CRITICAL_INTENT_DISPARITY"
+  },
+  {
+    "id": 3,
+    "scenario": "Chai Stall Payment",
+    "text": "Paying tea stall breakfast snack bill Rs 45 via UPI.",
+    "uri": "upi://pay?pa=sharmatea@okhdfcbank&pn=Sharma%20Tea%20Stall&am=45&cu=INR",
+    "is_deception": false,
+    "expected_verdict": "NO_DISPARITY_DETECTED"
+  },
+  {
+    "id": 4,
+    "scenario": "Kirana Store Milk Payment",
+    "text": "Doodh aur bread ka bill pay kar raha hu Rs 110.",
+    "uri": "upi://pay?pa=guptakirana@icici&pn=Gupta%20General%20Store&am=110&cu=INR",
+    "is_deception": false,
+    "expected_verdict": "NO_DISPARITY_DETECTED"
+  },
+  {
+    "id": 5,
+    "scenario": "Urgent Discom Intimidation",
+    "text": "URGENT NOTICE: Power disconnected tonight by 9:30 PM due to unpaid bill. Pay Rs 120 immediately.",
+    "uri": "upi://pay?pa=discom.billdesk@icici&pn=Discom%20Power&am=120&cu=INR",
+    "is_deception": false,
+    "expected_verdict": "INSUFFICIENT_CONTEXT"
+  },
+  {
+    "id": 6,
+    "scenario": "Generic Link Without Text",
+    "text": "",
+    "uri": "upi://pay?pa=collegerecharge@sbi&pn=Campus%20Store&am=200&cu=INR",
+    "is_deception": false,
+    "expected_verdict": "INSUFFICIENT_CONTEXT"
+  },
+  {
+    "id": 7,
+    "scenario": "Broken / Malformed Scheme",
+    "text": "Click this link to pay Rs 500",
+    "uri": "http://scampage.com/pay?amount=500",
+    "is_deception": false,
+    "expected_verdict": "MALFORMED_PAYLOAD"
+  },
+  {
+    "id": 8,
+    "scenario": "Missing VPA Parameter",
+    "text": "Paying Rs 300 to vendor",
+    "uri": "upi://pay?pn=Unknown&am=300",
+    "is_deception": false,
+    "expected_verdict": "MALFORMED_PAYLOAD"
+  },
+  {
+    "id": 9,
+    "scenario": "Reverse Charge with Uncorroborated Amount",
+    "text": "Maine advance bhej diya hai, PIN dalo aur accept karo.",
+    "uri": "upi://pay?pa=scammer77@ybl&pn=QuickDeal&am=1500&cu=INR",
+    "is_deception": true,
+    "expected_verdict": "HIGH_INTENT_DISPARITY"
+  },
+  {
+    "id": 10,
+    "scenario": "Normal Cab Driver Payment",
+    "text": "Uber cab ride payment Rs 340 sent to driver.",
+    "uri": "upi://pay?pa=driver.singh@paytm&pn=Gurpreet%20Singh&am=340&cu=INR",
+    "is_deception": false,
+    "expected_verdict": "NO_DISPARITY_DETECTED"
+  }
+]
