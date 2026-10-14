@@ -78,5 +78,45 @@
     "uri": "upi://pay?pa=driver.singh@paytm&pn=Gurpreet%20Singh&am=340&cu=INR",
     "is_deception": false,
     "expected_verdict": "NO_DISPARITY_DETECTED"
+  },
+  {
+    "id": 11,
+    "scenario": "Adversarial: Hinglish 'bhej di hai' with PIN directive",
+    "text": "Maine Rs 5000 bhej di hai, PIN dalo",
+    "uri": "upi://pay?pa=fraud99@ybl&pn=Buyer&am=5000&cu=INR",
+    "is_deception": true,
+    "expected_verdict": "CRITICAL_INTENT_DISPARITY"
+  },
+  {
+    "id": 12,
+    "scenario": "Adversarial: Credit promise with PIN directive",
+    "text": "Aapke account me Rs 5000 credit ho jayenge, PIN daalo",
+    "uri": "upi://pay?pa=claimreward@axisbank&pn=RewardsDesk&am=5000&cu=INR",
+    "is_deception": true,
+    "expected_verdict": "CRITICAL_INTENT_DISPARITY"
+  },
+  {
+    "id": 13,
+    "scenario": "Adversarial: 'I am paying you' with accept directive",
+    "text": "I am paying you Rs 5000, scan karke accept karo",
+    "uri": "upi://pay?pa=trapuser@okhdfcbank&pn=OnlineBuyer&am=5000&cu=INR",
+    "is_deception": true,
+    "expected_verdict": "CRITICAL_INTENT_DISPARITY"
+  },
+  {
+    "id": 14,
+    "scenario": "Adversarial: Urgent Coercion on Reverse-Charge Scam",
+    "text": "Urgent! Maine Rs 5000 bhej diya, PIN dalo",
+    "uri": "upi://pay?pa=scamurgency@icici&pn=UrgentCanteen&am=5000&cu=INR",
+    "is_deception": true,
+    "expected_verdict": "CRITICAL_INTENT_DISPARITY"
+  },
+  {
+    "id": 15,
+    "scenario": "Adversarial: 'PIN mat dalo, bas accept karo'",
+    "text": "Maine bhej diya, PIN mat dalo, bas accept karo",
+    "uri": "upi://pay?pa=cleverfraud@paytm&pn=QuickCash&am=2000&cu=INR",
+    "is_deception": true,
+    "expected_verdict": "HIGH_INTENT_DISPARITY"
   }
 ]
