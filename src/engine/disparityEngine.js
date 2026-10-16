@@ -1,256 +1,178 @@
-﻿import { isVpaFlaggedInRadar } from '../utils/threatIntel.js';
+import { isVpaFlaggedInRadar } from '../utils/threatIntel.js';
+import { parseUpiUri } from '../utils/upiParser.js';
 
-function parseUpi(rawInput = '') {
-  const input = (rawInput || '').trim();
-  const empty = { isValid: false, rawUri: input, pa: '', pn: '', am: null, cu: 'INR', params: {} };
-  if (!input) return empty;
+export function normalizeSecurityText(input = '') {
+  if (typeof input !== 'string') return '';
+  const zeroWidthRegex = /[\u200B-\u200D\u2060\uFEFF]/g;
+  let normalized = input.normalize('NFKC').replace(zeroWidthRegex, '').toLowerCase().trim();
+  normalized = normalized.replace(/[\u0966-\u096F]/g, d => String(d.charCodeAt(0) - 0x0966));
+  return normalized;
+}
 
-  if (/^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/.test(input)) {
-    return { isValid: true, rawUri: input, pa: input.toLowerCase(), pn: input.split('@')[0], am: null, cu: 'INR', params: { pa: input } };
-  }
-
-  if (!input.toLowerCase().startsWith('upi://pay')) return empty;
-
-  try {
-    const qIndex = input.indexOf('?');
-    if (qIndex === -1) return empty;
-    const query = input.slice(qIndex + 1);
-    const params = {};
-    for (const pair of query.split('&')) {
-      if (!pair) continue;
-      const [k, v] = pair.split('=');
-      if (k) {
-        try {
-          params[decodeURIComponent(k)] = v ? decodeURIComponent(v.replace(/\+/g, ' ')) : '';
-        } catch {
-          params[k] = v || '';
-        }
-      }
+export function extractAllAmounts(text) {
+  if (!text || typeof text !== 'string') return [];
+  const t = normalizeSecurityText(text);
+  const re = /(?:\u20b9|\brs\.?|\binr)\s*(\d[\d,]*(?:\.\d{1,2})?)|(\d[\d,]*(?:\.\d{1,2})?)\s*(?:rupees\b|rs\b|inr\b|\/-)/gi;
+  const amounts = [];
+  for (const m of t.matchAll(re)) {
+    const raw = (m[1] ?? m[2]).replace(/,/g, '');
+    const num = parseFloat(raw);
+    if (!isNaN(num) && num > 0) {
+      amounts.push(num);
     }
-    const pa = params.pa ? params.pa.trim() : '';
-    if (!pa) return { ...empty, rawUri: input, params };
-
-    return {
-      isValid: true,
-      rawUri: input,
-      pa,
-      pn: params.pn ? params.pn.trim() : '',
-      am: params.am ? params.am.trim() : null,
-      cu: params.cu ? params.cu.trim().toUpperCase() : 'INR',
-      params
-    };
-  } catch {
-    return empty;
   }
+  return amounts;
 }
 
 const CYRILLIC_REGEX = /[\u0400-\u04FF]/;
 const PERCENT_CYRILLIC_REGEX = /%D[0-4]%[89A-F][0-9A-F]/i;
 
-const CONSUMER_PSPS = [
-  '@okaxis', '@okhdfcbank', '@okicici', '@oksbi',
-  '@ybl', '@ibl', '@axl', '@paytm', '@apl', '@airtel'
+const HIGH_AUTHORITY_IMPERSONATION = [
+  /\brbi\b/i, /\brefund\s*desk\b/i, /\belectricity\b/i,
+  /\bdiscom\b/i, /\bbsnl\b/i, /\bcustomercare\b/i, /\blottery\b/i, /\bkbc\b/i,
+  /\bpolice\b/i, /\bchallan\b/i, /\btraffic\b/i, /\brto\b/i, /\bincome\s*tax\b/i
 ];
 
-const IMPERSONATION_TARGETS = [
-  'army', 'canteen', 'electricity', 'discom', 'bsnl',
-  'support', 'customercare', 'refund', 'lottery', 'kbc',
-  'police', 'challan', 'traffic', 'rto', 'income', 'rbi'
-];
+export function evaluateDisparity(contextText = '', uriPayload = '') {
+  const parsed = parseUpiUri(uriPayload);
 
-export function evaluateDisparity(message = '', uri = '') {
-  const parsed = parseUpi(uri);
-  const cleanMsg = (message || '').toLowerCase().trim();
-
-  // 1. Malformed Scheme / URI
   if (!parsed.isValid) {
     return {
       verdict: 'MALFORMED_PAYLOAD',
-      score: 1.0,
-      signals: [{ id: 'MALFORMED_URI', weight: 100 }],
-      parsedUri: parsed
+      score: 100,
+      signals: [{ id: 'MALFORMED_URI', label: parsed.error || 'Invalid UPI Payload' }],
+      reasons: [parsed.error || 'Invalid UPI payload or parameter smuggling detected'],
+      isSmuggled: Boolean(parsed.isSmuggled),
+      parsedPayload: parsed
     };
   }
 
-  const rawPa = parsed.pa;
-  const decodedPa = (() => {
-    try { return decodeURIComponent(rawPa); } catch { return rawPa; }
-  })();
-  const lowerPa = decodedPa.toLowerCase();
-  const signals = [];
+  const normalized = normalizeSecurityText(contextText);
 
-  // 2. Zero-Knowledge Threat Radar Match
-  if (isVpaFlaggedInRadar(lowerPa)) {
-    signals.push({ id: 'COMMUNITY_THREAT_RADAR_MATCH', weight: 100 });
-    return {
-      verdict: 'CRITICAL_INTENT_DISPARITY',
-      score: 0.99,
-      signals,
-      parsedUri: parsed
-    };
-  }
-
-  // 3. Bank Awareness Educational Negation Advisory (Test #21)
-  if (
-    /(bank\s+never\s+asks\s+for\s+pin|never\s+share\s+pin|kabhi\s+bhi\s+pin\s+na\s+dalein|never\s+enter\s+pin)/i.test(cleanMsg) &&
-    !/(bhej\s+diya|bheja\s+hai|sent\s+rs|maine\s+5000)/i.test(cleanMsg)
-  ) {
+  if (!normalized) {
     return {
       verdict: 'INSUFFICIENT_CONTEXT',
-      score: 0.1,
-      signals: [{ id: 'ADVISORY_NEGATION', weight: 10 }],
-      parsedUri: parsed
+      score: 10,
+      signals: [{ id: 'NO_CONTEXT', label: 'Payment link without conversational context' }],
+      reasons: ['No text context provided to evaluate against payment payload'],
+      parsedPayload: parsed
     };
   }
 
-  // 4. Cyrillic Homograph Attacks
-  const isCyrillic = CYRILLIC_REGEX.test(decodedPa) || PERCENT_CYRILLIC_REGEX.test(rawPa);
-  if (isCyrillic) {
-    signals.push({ id: 'HOMOGRAPH_ATTACK', weight: 65 });
-  }
-
-  // 5. Pattern Classifications (Latin & Devanagari)
-  const hasReverseSignal = /(bhej\s*diya|bhej\s*diye|bheja\s*hai|bhej\s*di\s*hai|भेज\s*दिया|भेजे\s*हैं|पैसे\s*पाने|credit\b|credited\b|claim\s*your\s*payment|claim.*cashback|cashback|receive\s*rs|receive.*cashback|scan\s+to\s+receive|accept\s*funds|accept\s*money|i\s*am\s*paying\s*you|transfer\s*done|advance\s*bhej)/i.test(cleanMsg) ||
-    (/\bsent\b/i.test(cleanMsg) && !/\b(cab|auto|fare|chai|tea|kirana)\b/i.test(cleanMsg));
-
-  const directsPin = /(pin\s*dalo|enter\s*pin|put\s*pin|pin\s*daal|पिन\s*डाल|पिन\s*दर्ज|pin\s*enter)/i.test(cleanMsg);
-  const directsAcceptOnly = /(bas\s*accept\s*karo|sirf\s*accept|pin\s*mat\s*dalo)/i.test(cleanMsg);
-  const isUrgent = /(cutoff|power\s*cut|power\s*disconnected|disconnected|bijli|blocked|expire|within\s*\d+|aaj\s*raat|immediate|urgent|bill\s+desk)/i.test(cleanMsg);
-
-  if (hasReverseSignal) {
-    signals.push({ id: 'REVERSE_CHARGE_SIGNAL', weight: 60 });
-  }
-
-  if (directsPin) {
-    signals.push({ id: 'DIRECTIVE_PIN_ENTRY', weight: 50 });
-  }
-
-  if (directsAcceptOnly) {
-    signals.push({ id: 'DIRECTIVE_ACCEPT_ONLY', weight: 55 });
-  }
-
-  if (isUrgent) {
-    signals.push({ id: 'URGENCY_INTIMIDATION', weight: 55 });
-  }
-
-  // 6. Impersonation of Official Entities on Consumer PSP handles
-  const isConsumerPsp = CONSUMER_PSPS.some(psp => lowerPa.endsWith(psp));
-  const impersonatesTarget = IMPERSONATION_TARGETS.some(t => lowerPa.includes(t));
-  if (isConsumerPsp && impersonatesTarget) {
-    signals.push({ id: 'IMPERSONATION_RISK', weight: 55 });
-  }
-
-  // 7. Amount Extraction & Uncorroborated Check
-  const amountMatch = cleanMsg.match(/(?:rs\.?|inr|₹)?\s*(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:\/-)?/i);
-  let claimedAmount = null;
-  if (amountMatch && amountMatch[1]) {
-    claimedAmount = parseFloat(amountMatch[1].replace(/,/g, ''));
-  }
-  const uriAmount = parsed.am ? parseFloat(parsed.am) : null;
-
-  // Uncorroborated amount: Text promises money/advance without stating exact amount, but URI silently carries an amount
-  const isUncorroboratedAmount = hasReverseSignal && claimedAmount === null && uriAmount !== null;
-  const hasAmountMismatch = claimedAmount !== null && uriAmount !== null && Math.abs(claimedAmount - uriAmount) > 0.01;
-
-  if (hasAmountMismatch) {
-    signals.push({ id: 'AMOUNT_MISMATCH', weight: 50 });
-  } else if (isUncorroboratedAmount) {
-    signals.push({ id: 'UNCORROBORATED_AMOUNT', weight: 50 });
-  }
-
-  // 8. Legitimate Outgoing Purchases
-  const isOutgoingPurchase = /(chai|tea|kirana|milk|doodh|vegetables|grocery|groceries|cab|auto|taxi|fare|payment\s*for|paid\s*for|fare\s*payment)/i.test(cleanMsg);
-  const hasScamIntent = hasReverseSignal || directsPin || directsAcceptOnly || isUrgent || (isConsumerPsp && impersonatesTarget) || isCyrillic;
-
-  if (isOutgoingPurchase && !hasScamIntent && !hasAmountMismatch) {
-    signals.push({ id: 'INTENT_USER_OUTGOING', weight: -30 });
+  // Pure bank awareness advisory negation
+  const isAwarenessNegation = /bank\s+never\s+asks\s+for\s+pin/i.test(normalized);
+  if (isAwarenessNegation && !/(bhej|sent|pay\s*karo|pin\s*dalo|accept|claim)/i.test(normalized.replace(/bank\s+never\s+asks\s+for\s+pin/i, ''))) {
     return {
-      verdict: 'NO_DISPARITY_DETECTED',
-      score: 0.0,
-      signals,
-      parsedUri: parsed
+      verdict: 'INSUFFICIENT_CONTEXT',
+      score: 10,
+      signals: [{ id: 'AWARENESS_NEGATION', label: 'Security advisory text' }],
+      reasons: ['Informational bank advisory text detected'],
+      parsedPayload: parsed
     };
   }
 
-  // 9. Exact Verdict Logic Hierarchy
+  const amounts = extractAllAmounts(contextText);
+  const claimedAmount = amounts.length > 0 ? amounts[0] : null;
+  const payloadAmount = parsed.parsedAmount;
 
-  // Rule 1: Reverse Charge with Uncorroborated Amount is HIGH_INTENT_DISPARITY (Test #9)
-  if (isUncorroboratedAmount) {
-    return {
-      verdict: 'HIGH_INTENT_DISPARITY',
-      score: 0.75,
-      signals,
-      parsedUri: parsed
-    };
+  const signals = [];
+  const reasons = [];
+  let severityScore = 0;
+
+  // 1. Community Threat Radar Seed Hit
+  if (isVpaFlaggedInRadar(parsed.pa)) {
+    signals.push({ id: 'COMMUNITY_THREAT_RADAR_MATCH', label: 'Known Malicious VPA' });
+    signals.push({ id: 'THREAT_RADAR_HIT', label: 'Known Threat Intelligence Hit' });
+    reasons.push(`VPA ${parsed.pa} matches known threat intelligence telemetry`);
+    severityScore = Math.max(severityScore, 95);
   }
 
-  // Rule 2: Amount Mismatch without PIN is HIGH (Test #16)
-  if (hasAmountMismatch && !directsPin) {
-    return {
-      verdict: 'HIGH_INTENT_DISPARITY',
-      score: 0.75,
-      signals,
-      parsedUri: parsed
-    };
+  // 2. Homoglyph / Cyrillic Spoofing
+  if (CYRILLIC_REGEX.test(parsed.pa) || PERCENT_CYRILLIC_REGEX.test(parsed.rawUri) || /%[0-9a-f]{2}/i.test(parsed.pa)) {
+    signals.push({ id: 'HOMOGLYPH_VPA', label: 'Cyrillic Homoglyph Lookalike' });
+    reasons.push('Homoglyph attack: Non-Latin lookalike characters detected in VPA address');
+    severityScore = Math.max(severityScore, 65);
   }
 
-  // Rule 3: "PIN mat dalo, bas accept karo" is explicitly HIGH (Test #15)
-  if (directsAcceptOnly) {
-    return {
-      verdict: 'HIGH_INTENT_DISPARITY',
-      score: 0.75,
-      signals,
-      parsedUri: parsed
-    };
+  // 3. High Authority Impersonation Check (RBI, Refund Desk on personal/wallet VPAs like @paytm, @ybl)
+  const combinedIdent = `${parsed.pa} ${parsed.pn || ''}`;
+  const isHighAuthority = HIGH_AUTHORITY_IMPERSONATION.some(pattern => pattern.test(combinedIdent));
+  if (isHighAuthority && !/@(rbi\.org\.in|gov\.in)$/i.test(parsed.pa)) {
+    signals.push({ id: 'IMPERSONATION_RISK', label: 'Institutional Impersonation' });
+    reasons.push('Payee claims regulatory or institutional authority on an unverified handle');
+    severityScore = Math.max(severityScore, 65);
   }
 
-  // Rule 4: CRITICAL CONDITIONS (Explicit Reverse Claim or PIN Directive)
-  const isCriticalReverseClaim = (
-    directsPin ||
-    (hasReverseSignal && /(claim|receive|i\s*am\s*paying|cashback)/i.test(cleanMsg)) ||
-    (hasReverseSignal && uriAmount && claimedAmount && Math.abs(claimedAmount - uriAmount) <= 0.01) ||
-    (hasReverseSignal && /(bhej\s*diya|bheja\s*hai|advance)/i.test(cleanMsg))
-  );
+  // 4. User Genuine Debit Intent Detection (Excludes when high authority impersonation is caught)
+  const creditClaims = /\b(bhej\s*diya|bhej\s*di\s*hai|bheja\s*hai|bhej\s*diye|i\s*sent\s*you|i\s*have\s*sent|i\s*am\s*paying\s*you|payment.*received|scan\s*to\s*(?:receive|claim)|refund\s*(?:approve|milega)|credit\s*ho\s*jayenge|credited|cashback|\u0930\u093f\u092b\u0902\u0921|\u092a\u0948\u0938\u0947\s*\u092a\u093e\u0928\u0947)\b/i.test(normalized);
+  const acceptDirective = /\b(accept\s*karo|accept\s*karke|claim\s*your\s*payment|receive\s*cashback)\b/i.test(normalized);
 
-  if (isCriticalReverseClaim) {
-    return {
-      verdict: 'CRITICAL_INTENT_DISPARITY',
-      score: 0.95,
-      signals,
-      parsedUri: parsed
-    };
+  const isUserSending = /\b(paying\s+(?:bill|cab|chai|mess)|paid\s*to|send\s*to\s*driver)\b/i.test(normalized) && !creditClaims;
+
+  // 5. PIN Directives vs PIN Negation
+  const pinNegation = /\b(pin\s+mat|mat\s+daal|mat\s+dalo|don't\s+enter\s+pin|\u092a\u093f\u0928\s+\u092e\u0924\s+\u0921\u093e\u0932)/i.test(normalized);
+  const pinDirective = (/\b(pin\s*(?:dalo|enter|daalo|daalna|daaliye|dalen)|enter\s*pin|daalo\s*pin)\b/i.test(normalized) ||
+    /[\u092a\u093f\u0928\s]+[\u0921\u093e\u0932\u0947\u0902\u0930\u094d\u091c]+/i.test(normalized)) && !pinNegation;
+
+  const urgencyPatterns = [
+    /\burgent\b/i, /\bimmediately\b/i, /\bpower\s*disconnected\b/i,
+    /\bdisconnected\s*tonight\b/i, /\bpower\s*cut\b/i, /\bpolice\b/i, /\bbijli\s*kat\b/i
+  ];
+  const hasUrgency = urgencyPatterns.some(p => p.test(normalized));
+
+  // 6. Reverse Charge and Directive Scoring
+  if (pinNegation && (creditClaims || acceptDirective)) {
+    signals.push({ id: 'CONFUSION_TRAP', label: 'Contradictory PIN/Accept Advisory' });
+    reasons.push('Message contradicts standard banking advice regarding PIN entry');
+    severityScore = Math.max(severityScore, 65);
+  } else if (creditClaims && !isUserSending) {
+    if (payloadAmount && payloadAmount > 0 && claimedAmount !== null) {
+      signals.push({ id: 'REVERSE_CHARGE_TRAP', label: 'Reverse-Charge Intent Inversion' });
+      reasons.push(`Context claims credit/payment sent, but URI initiates a debit of ₹${payloadAmount}`);
+      severityScore = Math.max(severityScore, 95);
+    } else {
+      signals.push({ id: 'UNCORROBORATED_CREDIT', label: 'Uncorroborated Credit Promise' });
+      reasons.push('Context promises credit or refund without verified amount corroboration in text');
+      severityScore = Math.max(severityScore, 65);
+    }
+  } else if (pinDirective) {
+    signals.push({ id: 'PIN_DECEPTION', label: 'Deceptive PIN Entry Directive' });
+    reasons.push('PIN directive detected: User instructed to enter secret PIN');
+    severityScore = Math.max(severityScore, 95);
   }
 
-  // Rule 5: OTHER HIGH CONDITIONS
-  if (
-    isUrgent ||
-    isCyrillic ||
-    (isConsumerPsp && impersonatesTarget) ||
-    hasReverseSignal
-  ) {
-    return {
-      verdict: 'HIGH_INTENT_DISPARITY',
-      score: 0.75,
-      signals,
-      parsedUri: parsed
-    };
+  if (acceptDirective && !isUserSending && !pinNegation && severityScore < 65) {
+    signals.push({ id: 'ACCEPT_DIRECTIVE', label: 'Deceptive Accept Action' });
+    reasons.push('User instructed to accept incoming payment via payment URI');
+    severityScore = Math.max(severityScore, 65);
   }
 
-  // Rule 6: NO DISPARITY
-  if (cleanMsg.length > 0 && !hasScamIntent) {
-    return {
-      verdict: 'NO_DISPARITY_DETECTED',
-      score: 0.05,
-      signals,
-      parsedUri: parsed
-    };
+  // 7. Amount Discrepancy
+  if (claimedAmount && payloadAmount && Math.abs(claimedAmount - payloadAmount) > 0.01) {
+    signals.push({ id: 'AMOUNT_MISMATCH', label: 'Contextual Amount Discrepancy' });
+    reasons.push(`Message mentions ₹${claimedAmount}, but transaction payload requests ₹${payloadAmount}`);
+    severityScore = Math.max(severityScore, 65);
   }
 
-  // Rule 7: DEFAULT
+  // 8. Urgency
+  if (hasUrgency && !isUserSending) {
+    signals.push({ id: 'URGENCY_INTIMIDATION', label: 'Urgency / Coercive Intimidation' });
+    reasons.push('Urgent pressure keywords detected');
+    severityScore = Math.max(severityScore, 65);
+  }
+
+  let verdict = 'NO_DISPARITY_DETECTED';
+  if (severityScore >= 80) {
+    verdict = 'CRITICAL_INTENT_DISPARITY';
+  } else if (severityScore >= 45) {
+    verdict = 'HIGH_INTENT_DISPARITY';
+  }
+
   return {
-    verdict: 'INSUFFICIENT_CONTEXT',
-    score: 0.15,
+    verdict,
+    score: severityScore,
     signals,
-    parsedUri: parsed
+    reasons,
+    parsedPayload: parsed
   };
 }
