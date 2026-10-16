@@ -48,7 +48,7 @@ describe('Speech Voice Resolver Unit Tests', () => {
       }
     };
 
-    const voice = getBestVoice('kn'); // Kannada not installed in mock voices
+    const voice = getBestVoice('kn');
     expect(voice?.lang.toLowerCase()).toBe('hi-in');
   });
 

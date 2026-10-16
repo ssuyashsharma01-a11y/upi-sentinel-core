@@ -138,6 +138,31 @@ export default function App() {
     setShowLangPicker(false);
   };
 
+  // Pre-warm SpeechSynthesis voices to eliminate first-tap mobile lag
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    const loadVoices = () => {
+      try {
+        window.speechSynthesis.getVoices();
+      } catch {
+        // Ignored
+      }
+    };
+
+    loadVoices();
+
+    if (window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    return () => {
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.onvoiceschanged = null;
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (papaMode) {
       document.documentElement.classList.add('papa-mode');
