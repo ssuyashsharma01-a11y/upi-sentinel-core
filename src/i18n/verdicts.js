@@ -1,4 +1,14 @@
 ﻿export const SIGNAL_I18N = {
+  COMMUNITY_THREAT_RADAR_MATCH: {
+    en: 'Identified on Community Threat Radar',
+    hi: 'कम्युनिटी थ्रेट रडार पर फ्रॉड पाया गया',
+    pa: 'ਕਮਿਊਨਿਟੀ ਥ੍ਰੇਟ ਰਡਾਰ ਤੇ ਠੱਗੀ ਵਜੋਂ ਦਰਜ',
+    mr: 'कम्युनिटी थ्रेट रडारवर संशयित नोंद',
+    bn: 'কমিউনিটি থ্রেট রাডারে প্রতারক হিসেবে চিহ্নিত',
+    kn: 'ಕಮ್ಯುನಿಟಿ ಥ್ರೆಟ್ ರಡಾರ್‌ನಲ್ಲಿ ವಂಚನೆ ಪತ್ತೆ',
+    te: 'కమ్యూనిటీ థ్రెట్ రడార్‌లో మోసంగా గుర్తించబడింది',
+    ta: 'சமூக அச்சுறுத்தல் ரேடாரில் மோசடியாகப் பதிவானது'
+  },
   REVERSE_CHARGE_SIGNAL: {
     en: 'Incoming payment claim on debit request',
     hi: 'पैसे आने का दावा पर लिंक डेबिट का है',
@@ -443,3 +453,4 @@ export const VERDICT_I18N = {
     }
   }
 };
+

@@ -1,4 +1,5 @@
-﻿const CYRILLIC_LOOKALIKES = /[\u0400-\u04FF]/;
+﻿import { isVpaFlaggedInRadar } from '../utils/threatIntel.js';
+const CYRILLIC_LOOKALIKES = /[\u0400-\u04FF]/;
 
 export function parseUpiUri(rawUri) {
   if (!rawUri || typeof rawUri !== 'string') return null;
@@ -225,3 +226,4 @@ export function evaluateDisparity(contextText = '', upiUri = '') {
     parsedUri
   };
 }
+
