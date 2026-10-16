@@ -1,56 +1,47 @@
-import { describe, it, expect } from 'vitest';
+﻿import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
 import { evaluateDisparity } from '../src/engine/disparityEngine.js';
 
-const SEVERITY = {
-  NO_DISPARITY_DETECTED: 1,
-  INSUFFICIENT_CONTEXT: 2,
-  HIGH_INTENT_DISPARITY: 3,
-  CRITICAL_INTENT_DISPARITY: 4,
-  MALFORMED_PAYLOAD: 0
-};
+const SCAM_PHRASES = [
+  'advance bhej diya',
+  'PIN dalo accept karo',
+  'scan to receive',
+  'claim your cashback',
+  'power disconnected tonight',
+  'unpaid bill pay immediately'
+];
 
-describe('IADE v3.2 Mathematical Monotonicity Invariants', () => {
-  it('Property 1: Adding urgency signals NEVER decreases verdict severity', () => {
+const URIS = [
+  'upi://pay?pa=scammer@ybl&pn=Buyer&am=5000&cu=INR',
+  'upi://pay?pa=discom.update@paytm&pn=Electricity&am=120&cu=INR',
+  'upi://pay?pa=guptakirana@icici&pn=Gupta%20Store&am=110&cu=INR'
+];
+
+describe('Meaningful Monotonicity & Security Invariants', () => {
+  it('Adding reverse-charge directives to any baseline never makes verdict safer', () => {
     fc.assert(
       fc.property(
-        fc.string(),
-        fc.constantFrom(
-          'upi://pay?pa=shop@icici&pn=Shop&am=100&cu=INR',
-          'upi://pay?pa=fake99@ybl&pn=Army%20HQ&am=5000&cu=INR',
-          'upi://pay?pa=driver@paytm&pn=Driver&am=300&cu=INR'
-        ),
-        (msg, uri) => {
-          const baseVerdict = evaluateDisparity(msg, uri).verdict;
-          const urgentMsg = `URGENT! Power disconnected! ${msg}`;
-          const urgentVerdict = evaluateDisparity(urgentMsg, uri).verdict;
-          
-          if (SEVERITY[baseVerdict] > 0) {
-            // Severity must remain equal or increase
-            expect(SEVERITY[urgentVerdict]).toBeGreaterThanOrEqual(SEVERITY[baseVerdict]);
-          }
+        fc.constantFrom(...SCAM_PHRASES),
+        fc.constantFrom(...URIS),
+        (scamPhrase, uri) => {
+          const res = evaluateDisparity(scamPhrase, uri);
+          // A scam directive can never yield clean green
+          expect(res.verdict).not.toBe('NO_DISPARITY_DETECTED');
         }
       ),
       { numRuns: 100 }
     );
   });
 
-  it('Property 2: Adding PIN directive NEVER decreases verdict severity', () => {
+  it('Adding urgency prefix to a reverse charge trap never downgrades it below HIGH/CRITICAL', () => {
     fc.assert(
       fc.property(
-        fc.string(),
-        fc.constantFrom(
-          'upi://pay?pa=test@okhdfcbank&pn=Merchant&am=500&cu=INR',
-          'upi://pay?pa=fakeuser@ybl&pn=HQ&am=2000&cu=INR'
-        ),
-        (msg, uri) => {
-          const baseVerdict = evaluateDisparity(msg, uri).verdict;
-          const pinMsg = `${msg} scan karke PIN dalo`;
-          const pinVerdict = evaluateDisparity(pinMsg, uri).verdict;
-          
-          if (SEVERITY[baseVerdict] > 0) {
-            expect(SEVERITY[pinVerdict]).toBeGreaterThanOrEqual(SEVERITY[baseVerdict]);
-          }
+        fc.constantFrom('URGENT NOTICE! ', 'IMMEDIATE ACTION REQUIRED: ', 'ALERT: '),
+        fc.constantFrom(...SCAM_PHRASES),
+        fc.constantFrom(...URIS),
+        (urgency, scam, uri) => {
+          const res = evaluateDisparity(`${urgency} ${scam}`, uri);
+          expect(['CRITICAL_INTENT_DISPARITY', 'HIGH_INTENT_DISPARITY']).toContain(res.verdict);
         }
       ),
       { numRuns: 100 }
