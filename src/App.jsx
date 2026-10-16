@@ -37,6 +37,9 @@ import { VERDICT_I18N, SIGNAL_I18N } from './i18n/verdicts.js';
 import { SUPPORTED_LANGUAGES, DEFAULT_LANG } from './i18n/languages.js';
 
 const QrScanner = lazy(() => import('./components/QrScanner.jsx'));
+const ReceiptScanner = lazy(() => import('./components/ReceiptScanner.jsx'));
+const VoiceVerifier = lazy(() => import('./components/VoiceVerifier.jsx'));
+const ScamDojo = lazy(() => import('./components/ScamDojo.jsx'));
 
 const SCAM_ARCHIVES = [
   {
@@ -1197,7 +1200,28 @@ Exact Time of Debit: `;
               </div>
             )}
 
-            {/* TAB 3: EMERGENCY HELPLINE */}
+            
+            {/* TAB: SCAM SIMULATOR DOJO */}
+            {activeTab === 'dojo' && (
+              <Suspense fallback={<div className="p-10 text-center text-xs font-mono text-emerald-400">LOADING DOJO ARENA...</div>}>
+                <ScamDojo />
+              </Suspense>
+            )}
+
+            {/* TAB: SLIP OCR FORENSICS */}
+            {activeTab === 'receipt' && (
+              <Suspense fallback={<div className="p-10 text-center text-xs font-mono text-emerald-400">INITIALIZING OCR ENGINE...</div>}>
+                <ReceiptScanner />
+              </Suspense>
+            )}
+
+            {/* TAB: VOICE RADAR */}
+            {activeTab === 'voice' && (
+              <Suspense fallback={<div className="p-10 text-center text-xs font-mono text-emerald-400">INITIALIZING AUDIO ANALYZER...</div>}>
+                <VoiceVerifier />
+              </Suspense>
+            )}
+{/* TAB 3: EMERGENCY HELPLINE */}
             {activeTab === 'emergency' && (
               <div className="bg-white/5 backdrop-blur-2xl border border-white/10 rounded-3xl p-5 sm:p-6 space-y-5">
                 <div className="flex items-center space-x-3 text-rose-400">
@@ -1270,7 +1294,37 @@ Exact Time of Debit: `;
                 <span>{lang === 'en' ? 'Scanner' : 'स्कैनर'}</span>
               </button>
 
+              
               <button
+                type="button"
+                onClick={() => setActiveTab('dojo')}
+                className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1 ${
+                  activeTab === 'dojo' ? 'bg-amber-400 text-black shadow-lg shadow-amber-400/30' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <span>{lang === 'en' ? 'Dojo' : 'डोजो'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('receipt')}
+                className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1 ${
+                  activeTab === 'receipt' ? 'bg-emerald-400 text-black shadow-lg shadow-emerald-400/30' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <span>{lang === 'en' ? 'Slip OCR' : 'रसीद'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('voice')}
+                className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1 ${
+                  activeTab === 'voice' ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/30' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <span>{lang === 'en' ? 'Voice Radar' : 'वॉइस'}</span>
+              </button>
+<button
                 type="button"
                 onClick={() => setActiveTab('learn')}
                 className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1.5 ${
