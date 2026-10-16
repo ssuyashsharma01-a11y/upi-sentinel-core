@@ -1282,71 +1282,71 @@ Exact Time of Debit: `;
             </footer>
 
             {/* Bottom Dock Navigation */}
-            <nav className="fixed bottom-4 inset-x-0 mx-auto w-[92%] max-w-sm bg-slate-900/90 backdrop-blur-2xl border border-white/15 rounded-full p-1.5 flex items-center justify-between shadow-2xl z-40">
+            <nav className="fixed bottom-4 inset-x-0 mx-auto w-[96%] max-w-xl bg-slate-900/95 backdrop-blur-2xl border border-white/15 rounded-full p-1.5 flex items-center justify-between gap-1 shadow-2xl z-40">
               <button
                 type="button"
                 onClick={() => setActiveTab('scan')}
-                className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1.5 ${
+                className={`flex-1 py-2 px-1 rounded-full text-[11px] font-bold transition-all flex items-center justify-center space-x-1 ${
                   activeTab === 'scan' ? 'bg-cyan-400 text-black shadow-lg shadow-cyan-400/30' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <QrCode className="w-4 h-4 text-inherit" />
+                <QrCode className="w-3.5 h-3.5 shrink-0" />
                 <span>{lang === 'en' ? 'Scanner' : 'स्कैनर'}</span>
               </button>
 
-              
               <button
                 type="button"
                 onClick={() => setActiveTab('dojo')}
-                className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1 ${
+                className={`flex-1 py-2 px-1 rounded-full text-[11px] font-bold transition-all flex items-center justify-center space-x-1 ${
                   activeTab === 'dojo' ? 'bg-amber-400 text-black shadow-lg shadow-amber-400/30' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <Flame className="w-3.5 h-3.5 shrink-0" />
-                <span className="whitespace-nowrap">{lang === 'en' ? 'Dojo' : 'डोजो'}</span>
+                <Zap className="w-3.5 h-3.5 shrink-0 text-inherit" />
+                <span>{lang === 'en' ? 'Dojo' : 'डोजो'}</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setActiveTab('receipt')}
-                className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1 ${
+                className={`flex-1 py-2 px-1 rounded-full text-[11px] font-bold transition-all flex items-center justify-center space-x-1 ${
                   activeTab === 'receipt' ? 'bg-emerald-400 text-black shadow-lg shadow-emerald-400/30' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <FileText className="w-3.5 h-3.5 shrink-0" />
-                <span className="whitespace-nowrap">{lang === 'en' ? 'Slip OCR' : 'रसीद'}</span>
+                <FileText className="w-3.5 h-3.5 shrink-0 text-inherit" />
+                <span>{lang === 'en' ? 'Slip' : 'रसीद'}</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setActiveTab('voice')}
-                className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1 ${
+                className={`flex-1 py-2 px-1 rounded-full text-[11px] font-bold transition-all flex items-center justify-center space-x-1 ${
                   activeTab === 'voice' ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/30' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <Radio className="w-3.5 h-3.5 shrink-0" />
-                <span className="whitespace-nowrap">{lang === 'en' ? 'Voice' : 'वॉइस'}</span>
+                <Radio className="w-3.5 h-3.5 shrink-0 text-inherit" />
+                <span>{lang === 'en' ? 'Voice' : 'वॉइस'}</span>
               </button>
-<button
+
+              <button
                 type="button"
                 onClick={() => setActiveTab('learn')}
-                className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1.5 ${
+                className={`flex-1 py-2 px-1 rounded-full text-[11px] font-bold transition-all flex items-center justify-center space-x-1 ${
                   activeTab === 'learn' ? 'bg-cyan-400 text-black shadow-lg shadow-cyan-400/30' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <BookOpen className="w-4 h-4 text-inherit" />
+                <BookOpen className="w-3.5 h-3.5 shrink-0 text-inherit" />
                 <span>{lang === 'en' ? 'Learn' : 'सीखें'}</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setActiveTab('emergency')}
-                className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1.5 ${
+                className={`flex-1 py-2 px-1 rounded-full text-[11px] font-bold transition-all flex items-center justify-center space-x-1 ${
                   activeTab === 'emergency' ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/30' : 'text-slate-400 hover:text-rose-400'
                 }`}
               >
-                <PhoneCall className="w-4 h-4 text-inherit" />
-                <span>{lang === 'en' ? 'Helpline' : 'हेल्पलाइन'}</span>
+                <PhoneCall className="w-3.5 h-3.5 shrink-0 text-inherit" />
+                <span>1930</span>
               </button>
             </nav>
           </>
