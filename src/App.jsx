@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { 
   ShieldCheck, 
   ShieldAlert, 
@@ -400,8 +400,8 @@ export default function App() {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   };
 
-  const payHref = (analysis?.parsedUri?.rawUri && analysis.parsedUri.rawUri.startsWith('upi://')) 
-    ? analysis.parsedUri.rawUri 
+  const payHref = (analysis?.parsedUri?.rawUri && (analysis.parsedPayload || analysis.parsedUri).rawUri.startsWith('upi://')) 
+    ? (analysis.parsedPayload || analysis.parsedUri).rawUri 
     : (uri.trim().startsWith('upi://') ? uri.trim() : null);
 
   const copyReportPack = () => {
@@ -429,7 +429,7 @@ Exact Time of Debit: `;
 
   const exportZkSignature = async () => {
     if (!analysis?.parsedUri) return;
-    const zkData = await generateZkScamSignature(analysis.parsedUri, verdictMeta?.badge?.en);
+    const zkData = await generateZkScamSignature((analysis.parsedPayload || analysis.parsedUri), verdictMeta?.badge?.en);
     if (!zkData) return;
 
     const exportString = JSON.stringify(zkData, null, 2);
@@ -670,9 +670,9 @@ Exact Time of Debit: `;
                   </div>
 
                   <div className="my-5 p-4 rounded-2xl bg-black border border-white/20">
-                    {analysis.parsedUri?.am && (
+                    {(analysis.parsedPayload || analysis.parsedUri)?.am && (
                       <div className="text-4xl font-black text-rose-400 font-mono">
-                        −₹{analysis.parsedUri.am}
+                        −₹{(analysis.parsedPayload || analysis.parsedUri).am}
                       </div>
                     )}
                     <p className="text-lg font-bold text-white mt-1">
@@ -762,14 +762,14 @@ Exact Time of Debit: `;
                       <div className="pt-3.5 flex items-center justify-between gap-3">
                         <div className="flex items-center space-x-3 min-w-0">
                           <div className="w-11 h-11 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center font-bold text-cyan-300 text-base shrink-0">
-                            {analysis.parsedUri?.pn?.charAt(0) || 'U'}
+                            {(analysis.parsedPayload || analysis.parsedUri)?.pn?.charAt(0) || 'U'}
                           </div>
                           <div className="min-w-0">
                             <div className="font-bold text-white text-sm sm:text-base truncate">
-                              {analysis.parsedUri?.pn || payeeDisplay}
+                              {(analysis.parsedPayload || analysis.parsedUri)?.pn || payeeDisplay}
                             </div>
                             <div className="text-xs font-mono text-slate-400 truncate">
-                              {analysis.parsedUri?.pa || 'VPA Not Found'}
+                              {(analysis.parsedPayload || analysis.parsedUri)?.pa || 'VPA Not Found'}
                             </div>
                           </div>
                         </div>
@@ -779,7 +779,7 @@ Exact Time of Debit: `;
                             {lang === 'en' ? 'Debit Amount' : 'कटने वाली रकम'}
                           </div>
                           <div className="text-xl sm:text-2xl font-black font-mono text-white tracking-tight">
-                            {analysis.parsedUri?.am ? `₹${analysis.parsedUri.am}` : '₹--'}
+                            {(analysis.parsedPayload || analysis.parsedUri)?.am ? `₹${(analysis.parsedPayload || analysis.parsedUri).am}` : '₹--'}
                           </div>
                         </div>
                       </div>
@@ -842,9 +842,9 @@ Exact Time of Debit: `;
                       </div>
 
                       <div className="my-4 p-3.5 rounded-2xl bg-black/60 border border-white/10 space-y-1.5">
-                        {isDanger && analysis.parsedUri?.am && (
+                        {isDanger && (analysis.parsedPayload || analysis.parsedUri)?.am && (
                           <div className="text-3xl font-black text-rose-400 leading-tight font-mono tracking-tight">
-                            −₹{analysis.parsedUri.am}
+                            −₹{(analysis.parsedPayload || analysis.parsedUri).am}
                           </div>
                         )}
                         <div className="text-sm sm:text-base font-bold text-white leading-snug">
