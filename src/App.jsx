@@ -1302,7 +1302,8 @@ Exact Time of Debit: `;
                   activeTab === 'dojo' ? 'bg-amber-400 text-black shadow-lg shadow-amber-400/30' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <span>{lang === 'en' ? 'Dojo' : 'डोजो'}</span>
+                <Flame className="w-3.5 h-3.5 shrink-0" />
+                <span className="whitespace-nowrap">{lang === 'en' ? 'Dojo' : 'डोजो'}</span>
               </button>
 
               <button
@@ -1312,7 +1313,8 @@ Exact Time of Debit: `;
                   activeTab === 'receipt' ? 'bg-emerald-400 text-black shadow-lg shadow-emerald-400/30' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <span>{lang === 'en' ? 'Slip OCR' : 'रसीद'}</span>
+                <FileText className="w-3.5 h-3.5 shrink-0" />
+                <span className="whitespace-nowrap">{lang === 'en' ? 'Slip OCR' : 'रसीद'}</span>
               </button>
 
               <button
@@ -1322,7 +1324,8 @@ Exact Time of Debit: `;
                   activeTab === 'voice' ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/30' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <span>{lang === 'en' ? 'Voice Radar' : 'वॉइस'}</span>
+                <Radio className="w-3.5 h-3.5 shrink-0" />
+                <span className="whitespace-nowrap">{lang === 'en' ? 'Voice' : 'वॉइस'}</span>
               </button>
 <button
                 type="button"
