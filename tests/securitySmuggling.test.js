@@ -18,7 +18,7 @@ describe('Security Hardening & Anti-Bypass Invariants', () => {
   });
 
   it('normalizes zero-width characters and Devanagari numerals (०-९)', () => {
-    const zeroWidthMsg = 'bhej\u200Bdiya \u096B\u0966\u0966'; // "bhejdiya ५००"
+    const zeroWidthMsg = 'bhej\u200Bdiya \u096B\u0966\u0966';
     const normalized = normalizeSecurityText(zeroWidthMsg);
     expect(normalized).toBe('bhejdiya 500');
   });
@@ -43,10 +43,23 @@ describe('Security Hardening & Anti-Bypass Invariants', () => {
   });
 
   it('triggers critical inversion on Devanagari PIN directives', () => {
-    // "\u092a\u0948\u0938\u0947 \u092a\u093e\u0928\u0947... \u092a\u093f\u0928 \u0921\u093e\u0932\u0947\u0902"
     const context = '\u092a\u0948\u0938\u0947 \u092a\u093e\u0928\u0947 \u0915\u0947 \u0932\u093f\u090f \u0924\u0941\u0930\u0902\u0924 \u0905\u092a\u0928\u093e \u092a\u093f\u0928 \u0921\u093e\u0932\u0947\u0902';
     const uri = 'upi://pay?pa=scammer@ybl&am=2000';
     const evaluation = evaluateDisparity(context, uri);
     expect(evaluation.verdict).toBe('CRITICAL_INTENT_DISPARITY');
+  });
+
+  it('negative test: legitimate Hindi message yields NO_DISPARITY_DETECTED', () => {
+    // "बिजली का बिल भर रहा हूँ" + legitimate merchant
+    const context = '\u092c\u093f\u091c\u0932\u0940 \u0915\u093e \u092c\u093f\u0932 \u092d\u0930 \u0930\u0939\u093e \u0939\u0942\u0901';
+    const uri = 'upi://pay?pa=powerbill@billdesk&am=450';
+    const evaluation = evaluateDisparity(context, uri);
+    expect(evaluation.verdict).toBe('NO_DISPARITY_DETECTED');
+  });
+
+  it('catches institutional impersonation on consumer PSP handles', () => {
+    const fakeArmy = 'upi://pay?pa=fakecanteen@ybl&pn=Army%20HQ%20Canteen&am=1200';
+    const evaluation = evaluateDisparity('Paying for canteen mess', fakeArmy);
+    expect(evaluation.verdict).toBe('HIGH_INTENT_DISPARITY');
   });
 });

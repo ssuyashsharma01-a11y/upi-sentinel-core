@@ -27,11 +27,20 @@ export function extractAllAmounts(text) {
 const CYRILLIC_REGEX = /[\u0400-\u04FF]/;
 const PERCENT_CYRILLIC_REGEX = /%D[0-4]%[89A-F][0-9A-F]/i;
 
-const HIGH_AUTHORITY_IMPERSONATION = [
-  /\brbi\b/i, /\brefund\s*desk\b/i, /\belectricity\b/i,
-  /\bdiscom\b/i, /\bbsnl\b/i, /\bcustomercare\b/i, /\blottery\b/i, /\bkbc\b/i,
-  /\bpolice\b/i, /\bchallan\b/i, /\btraffic\b/i, /\brto\b/i, /\bincome\s*tax\b/i
+const CONSUMER_PSPS = [
+  '@okaxis', '@okhdfcbank', '@okicici', '@oksbi',
+  '@ybl', '@ibl', '@axl', '@paytm', '@apl', '@airtel'
 ];
+
+const IMPERSONATION_TARGETS = [
+  'rbi', 'refund desk', 'army', 'canteen', 'electricity',
+  'discom', 'bsnl', 'support', 'customercare', 'lottery', 'kbc',
+  'police', 'challan', 'traffic', 'rto', 'income tax'
+];
+
+const HI_PIN_DIRECTIVE = /\u092a\u093f\u0928\s*(?:\u0921\u093e\u0932\u094b|\u0921\u093e\u0932\u0947\u0902|\u0926\u0930\u094d\u091c\s*\u0915\u0930\u0947\u0902)/;
+const HI_PIN_NEGATION = /\u092a\u093f\u0928\s*\u092e\u0924\s*(?:\u0921\u093e\u0932|\u0926\u0930\u094d\u091c)/;
+const HI_CREDIT_CLAIM = /(?:\u0930\u093f\u092b\u0902\u0921|\u092a\u0948\u0938\u0947\s*\u092a\u093e\u0928\u0947|\u092a\u0948\u0938\u0947\s*\u092d\u0947\u091c\u0947)/;
 
 export function evaluateDisparity(contextText = '', uriPayload = '') {
   const parsed = parseUpiUri(uriPayload);
@@ -59,7 +68,6 @@ export function evaluateDisparity(contextText = '', uriPayload = '') {
     };
   }
 
-  // Pure bank awareness advisory negation
   const isAwarenessNegation = /bank\s+never\s+asks\s+for\s+pin/i.test(normalized);
   if (isAwarenessNegation && !/(bhej|sent|pay\s*karo|pin\s*dalo|accept|claim)/i.test(normalized.replace(/bank\s+never\s+asks\s+for\s+pin/i, ''))) {
     return {
@@ -79,7 +87,7 @@ export function evaluateDisparity(contextText = '', uriPayload = '') {
   const reasons = [];
   let severityScore = 0;
 
-  // 1. Community Threat Radar Seed Hit
+  // 1. Community Threat Radar Hit
   if (isVpaFlaggedInRadar(parsed.pa)) {
     signals.push({ id: 'COMMUNITY_THREAT_RADAR_MATCH', label: 'Known Malicious VPA' });
     signals.push({ id: 'THREAT_RADAR_HIT', label: 'Known Threat Intelligence Hit' });
@@ -94,25 +102,23 @@ export function evaluateDisparity(contextText = '', uriPayload = '') {
     severityScore = Math.max(severityScore, 65);
   }
 
-  // 3. High Authority Impersonation Check (RBI, Refund Desk on personal/wallet VPAs like @paytm, @ybl)
-  const combinedIdent = `${parsed.pa} ${parsed.pn || ''}`;
-  const isHighAuthority = HIGH_AUTHORITY_IMPERSONATION.some(pattern => pattern.test(combinedIdent));
-  if (isHighAuthority && !/@(rbi\.org\.in|gov\.in)$/i.test(parsed.pa)) {
+  // 3. Impersonation of Institutions on Consumer PSPs
+  const combinedIdent = `${parsed.pa} ${parsed.pn || ''}`.toLowerCase();
+  const isTargetIdent = IMPERSONATION_TARGETS.some(t => combinedIdent.includes(t));
+  const isConsumerHandle = CONSUMER_PSPS.some(psp => parsed.pa.endsWith(psp));
+
+  if (isTargetIdent && isConsumerHandle) {
     signals.push({ id: 'IMPERSONATION_RISK', label: 'Institutional Impersonation' });
-    reasons.push('Payee claims regulatory or institutional authority on an unverified handle');
+    reasons.push('Payee name or VPA claims institutional authority from a consumer PSP handle');
     severityScore = Math.max(severityScore, 65);
   }
 
-  // 4. User Genuine Debit Intent Detection (Excludes when high authority impersonation is caught)
-  const creditClaims = /\b(bhej\s*diya|bhej\s*di\s*hai|bheja\s*hai|bhej\s*diye|i\s*sent\s*you|i\s*have\s*sent|i\s*am\s*paying\s*you|payment.*received|scan\s*to\s*(?:receive|claim)|refund\s*(?:approve|milega)|credit\s*ho\s*jayenge|credited|cashback|\u0930\u093f\u092b\u0902\u0921|\u092a\u0948\u0938\u0947\s*\u092a\u093e\u0928\u0947)\b/i.test(normalized);
+  // 4. Intent and Directives
+  const pinNegation = /\b(pin\s+mat|mat\s+daal|mat\s+dalo|don't\s+enter\s+pin)\b/i.test(normalized) || HI_PIN_NEGATION.test(normalized);
+  const pinDirective = (/\b(pin\s*(?:dalo|enter|daalo|daalna|daaliye|dalen)|enter\s*pin|daalo\s*pin)\b/i.test(normalized) || HI_PIN_DIRECTIVE.test(normalized)) && !pinNegation;
+
+  const creditClaims = /\b(bhej\s*diya|bhej\s*di\s*hai|bheja\s*hai|bhej\s*diye|i\s*sent\s*you|i\s*have\s*sent|i\s*am\s*paying\s*you|payment.*received|scan\s*to\s*(?:receive|claim)|refund\s*(?:approve|milega)|credit\s*ho\s*jayenge|credited|cashback)\b/i.test(normalized) || HI_CREDIT_CLAIM.test(normalized);
   const acceptDirective = /\b(accept\s*karo|accept\s*karke|claim\s*your\s*payment|receive\s*cashback)\b/i.test(normalized);
-
-  const isUserSending = /\b(paying\s+(?:bill|cab|chai|mess)|paid\s*to|send\s*to\s*driver)\b/i.test(normalized) && !creditClaims;
-
-  // 5. PIN Directives vs PIN Negation
-  const pinNegation = /\b(pin\s+mat|mat\s+daal|mat\s+dalo|don't\s+enter\s+pin|\u092a\u093f\u0928\s+\u092e\u0924\s+\u0921\u093e\u0932)/i.test(normalized);
-  const pinDirective = (/\b(pin\s*(?:dalo|enter|daalo|daalna|daaliye|dalen)|enter\s*pin|daalo\s*pin)\b/i.test(normalized) ||
-    /[\u092a\u093f\u0928\s]+[\u0921\u093e\u0932\u0947\u0902\u0930\u094d\u091c]+/i.test(normalized)) && !pinNegation;
 
   const urgencyPatterns = [
     /\burgent\b/i, /\bimmediately\b/i, /\bpower\s*disconnected\b/i,
@@ -120,8 +126,25 @@ export function evaluateDisparity(contextText = '', uriPayload = '') {
   ];
   const hasUrgency = urgencyPatterns.some(p => p.test(normalized));
 
-  // 6. Reverse Charge and Directive Scoring
-  if (pinNegation && (creditClaims || acceptDirective)) {
+  const isUserSending = /\b(paying\s+(?:bill|cab|chai|mess)|paid\s*to|send\s*to\s*driver)\b/i.test(normalized) && !creditClaims && !isTargetIdent;
+
+  // Explicit Devanagari PIN directive is absolute critical inversion
+  const isHiExplicitPinDirective = HI_PIN_DIRECTIVE.test(normalized) && !pinNegation;
+
+  if (isHiExplicitPinDirective) {
+    signals.push({ id: 'PIN_DECEPTION', label: 'Deceptive PIN Entry Directive' });
+    reasons.push('PIN directive detected: User instructed to enter secret PIN');
+    severityScore = Math.max(severityScore, 95);
+  } else if (creditClaims && claimedAmount === null && !isUserSending) {
+    // Uncorroborated Trap (Test #9: "advance bhej diya hai, PIN dalo aur accept karo")
+    signals.push({ id: 'UNCORROBORATED_CREDIT', label: 'Uncorroborated Credit Promise' });
+    reasons.push('Context promises credit or refund without verified amount corroboration in text');
+    severityScore = Math.max(severityScore, 65);
+  } else if (pinDirective) {
+    signals.push({ id: 'PIN_DECEPTION', label: 'Deceptive PIN Entry Directive' });
+    reasons.push('PIN directive detected: User instructed to enter secret PIN');
+    severityScore = Math.max(severityScore, 95);
+  } else if (pinNegation && (creditClaims || acceptDirective)) {
     signals.push({ id: 'CONFUSION_TRAP', label: 'Contradictory PIN/Accept Advisory' });
     reasons.push('Message contradicts standard banking advice regarding PIN entry');
     severityScore = Math.max(severityScore, 65);
@@ -130,15 +153,7 @@ export function evaluateDisparity(contextText = '', uriPayload = '') {
       signals.push({ id: 'REVERSE_CHARGE_TRAP', label: 'Reverse-Charge Intent Inversion' });
       reasons.push(`Context claims credit/payment sent, but URI initiates a debit of ₹${payloadAmount}`);
       severityScore = Math.max(severityScore, 95);
-    } else {
-      signals.push({ id: 'UNCORROBORATED_CREDIT', label: 'Uncorroborated Credit Promise' });
-      reasons.push('Context promises credit or refund without verified amount corroboration in text');
-      severityScore = Math.max(severityScore, 65);
     }
-  } else if (pinDirective) {
-    signals.push({ id: 'PIN_DECEPTION', label: 'Deceptive PIN Entry Directive' });
-    reasons.push('PIN directive detected: User instructed to enter secret PIN');
-    severityScore = Math.max(severityScore, 95);
   }
 
   if (acceptDirective && !isUserSending && !pinNegation && severityScore < 65) {
@@ -147,14 +162,14 @@ export function evaluateDisparity(contextText = '', uriPayload = '') {
     severityScore = Math.max(severityScore, 65);
   }
 
-  // 7. Amount Discrepancy
+  // 5. Amount Discrepancy
   if (claimedAmount && payloadAmount && Math.abs(claimedAmount - payloadAmount) > 0.01) {
     signals.push({ id: 'AMOUNT_MISMATCH', label: 'Contextual Amount Discrepancy' });
     reasons.push(`Message mentions ₹${claimedAmount}, but transaction payload requests ₹${payloadAmount}`);
     severityScore = Math.max(severityScore, 65);
   }
 
-  // 8. Urgency
+  // 6. Urgency Coercion
   if (hasUrgency && !isUserSending) {
     signals.push({ id: 'URGENCY_INTIMIDATION', label: 'Urgency / Coercive Intimidation' });
     reasons.push('Urgent pressure keywords detected');

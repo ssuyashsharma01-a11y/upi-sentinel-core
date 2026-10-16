@@ -1,15 +1,41 @@
-﻿name: CI Verification
+name: Verify Core Engine
 
 on: [push, pull_request]
+
+permissions:
+  contents: read
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - run: npm ci
-      - run: npm test
-      - run: npm run build
+          node-version: 22
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Linter
+        run: npm run lint
+
+      - name: Run JS Security Suite
+        run: npm test
+
+      - name: Run Benchmark Audit
+        run: npm run benchmark
+
+      - name: Run Python Parity Engine
+        run: python eval_engine.py
+
+      - name: Production Build
+        run: npm run build
