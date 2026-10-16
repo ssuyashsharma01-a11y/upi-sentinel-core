@@ -1,965 +1,974 @@
-﻿import React, { useState, useMemo } from 'react';
+﻿import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { 
   ShieldCheck, 
-  AlertOctagon, 
-  AlertTriangle,
-  CheckCircle2, 
-  Smartphone, 
-  Activity, 
-  Layers, 
-  Sliders, 
+  ShieldAlert, 
+  AlertTriangle, 
+  HelpCircle,
+  Volume2, 
+  PhoneCall, 
+  QrCode, 
+  ArrowRight, 
+  Globe, 
   RefreshCw, 
-  ChevronRight, 
-  Info, 
-  CreditCard, 
-  ArrowUpRight,
-  XCircle
+  ExternalLink, 
+  UploadCloud, 
+  FileText,
+  Lock,
+  CheckCircle2,
+  Share2,
+  Copy,
+  WifiOff,
+  BookOpen,
+  ShoppingBag,
+  Coins,
+  Zap
 } from 'lucide-react';
+import { evaluateDisparity } from './engine/disparityEngine.js';
+import { extractSharedPayload } from './utils/ingestion.js';
+import { DEMO_PRESETS } from './data/presets.js';
+import { VERDICT_I18N, SIGNAL_I18N } from './i18n/verdicts.js';
 
-const formatAmount = (amt) => {
-  if (amt === null || amt === undefined || isNaN(amt)) return 'Unavailable';
-  return `Rs ${Number(amt).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-};
+const QrScanner = lazy(() => import('./components/QrScanner.jsx'));
 
-const validateCommaGrouping = (numStr) => {
-  if (!numStr.includes(',')) return true;
-  const parts = numStr.split('.');
-  const subparts = parts[0].split(',');
-  const isWestern = [1, 2, 3].includes(subparts[0].length) && subparts.slice(1).every(p => p.length === 3);
-  let isIndian = false;
-  if (subparts.length >= 2) {
-    if (subparts[subparts.length - 1].length === 3 && subparts.slice(1, -1).every(p => p.length === 2) && [1, 2].includes(subparts[0].length)) {
-      isIndian = true;
-    }
-  }
-  return isWestern || isIndian;
-};
-
-const parseUpiUri = (uriString) => {
-  if (!uriString || typeof uriString !== 'string') {
-    return { isValid: false, error: 'Empty or non-string payload' };
-  }
-  const clean = uriString.trim();
-  
-  if (!/^upi:\/\/pay(\?|$)/i.test(clean)) {
-    return { isValid: false, error: 'Invalid URI scheme. Must start with upi://pay' };
-  }
-
-  try {
-    const url = new URL(clean);
-    const queryString = url.search.startsWith('?') ? url.search.slice(1) : url.search;
-    const items = queryString.split('&').filter(Boolean);
-    const keys = items.map(i => i.split('=')[0].toLowerCase());
-    if (new Set(keys).size !== keys.length) {
-      return { isValid: false, error: 'Conflicting duplicate query parameters detected' };
-    }
-
-    const params = new URLSearchParams(url.search);
-    const pa = params.get('pa');
-    const pn = params.get('pn');
-    const amRaw = params.get('am');
-    const cu = (params.get('cu') || 'INR').toUpperCase();
-    const mode = params.get('mode') || null;
-
-    if (!pa || pa.trim() === '') {
-      return { isValid: false, error: 'Missing mandatory VPA (pa) parameter' };
-    }
-    if (!pa.includes('@') || pa.split('@')[0].length === 0 || pa.split('@')[1].length === 0) {
-      return { isValid: false, error: 'Malformed VPA handle format (requires user@bank)' };
-    }
-
-    if (cu !== 'INR') {
-      return { isValid: false, error: `Unsupported currency: ${cu}. Protocol client strictly enforces INR.` };
-    }
-
-    let parsedAm = null;
-    if (amRaw !== null && amRaw.trim() !== '') {
-      const cleanAm = amRaw.trim();
-      if (!/^\d+(\.\d{1,2})?$/.test(cleanAm)) {
-        return { isValid: false, error: 'Malformed amount numeric string' };
-      }
-      parsedAm = Number(cleanAm);
-      if (isNaN(parsedAm) || parsedAm <= 0) {
-        return { isValid: false, error: 'Payload amount must be strictly greater than zero' };
-      }
-    }
-
-    return {
-      isValid: true,
-      pa: pa.trim(),
-      pn: pn && pn.trim() !== '' ? pn.trim() : 'Unregistered Payee Label',
-      am: parsedAm,
-      cu,
-      mode
-    };
-  } catch (err) {
-    return { isValid: false, error: 'URI syntax decoding failed' };
-  }
-};
-
-const extractIntent = (text) => {
-  if (!text || text.trim().length === 0) {
-    return { type: 'NONE', amount: null, urgency: false, cues: [], hasNegation: false };
-  }
-  const lower = text.toLowerCase().trim();
-
-  const negationPatterns = [/\bmat\b/, /\bdon't\b/, /\bdo not\b/, /\bkabhi mat\b/, /\bnever\b/];
-  const hasNegation = negationPatterns.some(p => p.test(lower));
-
-  let extractedAmount = null;
-  const hasNegativeCurrency = /(?:₹|rs\.?|inr)\s*-\s*\d+/i.test(lower) || /-\s*(?:₹|rs\.?|inr)\s*\d+/i.test(lower);
-  if (!hasNegativeCurrency) {
-    const amtRegex = /(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d{1,2})?)(?!\s*-\s*\d)|(?:\b|^)([\d,]+(?:\.\d{1,2})?)\s*(?:rupees|rs|inr|\/-)/i;
-    const match = lower.match(amtRegex);
-    if (match) {
-      const rawVal = match[1] || match[2];
-      if (validateCommaGrouping(rawVal)) {
-        const parsed = parseFloat(rawVal.replace(/,/g, ''));
-        if (!isNaN(parsed) && parsed > 0) {
-          extractedAmount = parsed;
-        }
-      }
-    }
-  }
-
-  const urgencyPatterns = [
-    /\burgent\b/, /\bimmediately\b/, /\bpower disconnected\b/, /\bdisconnected tonight\b/,
-    /\bpower cut\b/, /\bpolice complaint\b/, /\baccount blocked\b/, /\bpenalty\b/, /\bchallan\b/
-  ];
-  const detectedCues = urgencyPatterns.filter(p => p.test(lower)).map(p => p.source.replace(/\\b/g, ''));
-  const hasUrgency = detectedCues.length > 0;
-
-  const counterpartyClaims = [
-    'bhej diya', 'bheja hai', 'bhej diye', 'i sent you', 'i have sent', 
-    'refund approve', 'refund approved', 'credited to your'
-  ];
-  const actionDirectives = ['pin dalo', 'enter pin', 'scan qr', 'scan karke', 'approve karke', 'accept karo'];
-  const victimOutgoing = ['paying', 'send to', 'paid to', 'paying tea', 'paying snack', 'pay kar raha', 'transferring to'];
-
-  const hasCpClaim = counterpartyClaims.some(c => lower.includes(c));
-  const hasDirective = actionDirectives.some(d => lower.includes(d));
-  const hasVictimSend = victimOutgoing.some(v => lower.includes(v));
-
-  let type = 'AMBIGUOUS';
-  if (hasNegation) {
-    type = 'AMBIGUOUS';
-  } else if ((hasCpClaim || (lower.includes('refund') && (lower.includes('credit') || lower.includes('approve')))) && hasDirective) {
-    type = 'RECEIVE';
-  } else if (hasCpClaim) {
-    type = 'RECEIVE';
-  } else if (hasVictimSend && !hasCpClaim) {
-    type = 'SEND';
-  } else if (lower.includes('pay') && !hasCpClaim && !hasDirective) {
-    type = 'SEND';
-  }
-
-  return { type, amount: extractedAmount, urgency: hasUrgency, cues: detectedCues, hasNegation };
-};
-
-const evaluateDisparity = (messageText, upiUri) => {
-  const parsedUri = parseUpiUri(upiUri);
-  if (!parsedUri.isValid) {
-    return {
-      verdict: 'MALFORMED_PAYLOAD',
-      tone: 'neutral',
-      badge: 'Malformed Payload',
-      title: 'Invalid UPI Payload Scheme',
-      claimText: 'Payload string failed local syntax validation.',
-      actionText: 'Blocked — Invalid structure rejected before parsing completes.',
-      correlationText: 'Unavailable',
-      reason: parsedUri.error,
-      recommendation: 'Do not initiate this payload. The URI violates basic UPI formatting specifications.',
-      parsedUri: null
-    };
-  }
-
-  const intent = extractIntent(messageText);
-
-  if (intent.urgency) {
-    return {
-      verdict: 'INSUFFICIENT_CONTEXT',
-      tone: 'caution',
-      badge: 'Coercion / Urgency Signal',
-      title: 'Cognitive Pressure Indicator Detected',
-      claimText: `Context contains high-pressure keywords: [${intent.cues.join(', ')}].`,
-      actionText: `Payload requests an outgoing debit of ${formatAmount(parsedUri.am)} to ${parsedUri.pn}.`,
-      correlationText: 'Urgency Suppression Rule Active',
-      reason: 'Urgency cues indicate possible intimidation or social engineering, suppressing direct clearance.',
-      recommendation: 'Pause and verify utility disconnection claims through independent official channels.',
-      parsedUri
-    };
-  }
-
-  let amountCorrelation = 'UNAVAILABLE';
-  if (intent.amount !== null && parsedUri.am !== null) {
-    amountCorrelation = (Math.abs(intent.amount - parsedUri.am) < 0.01) ? 'MATCHED' : 'MISMATCHED';
-  }
-
-  if (intent.type === 'RECEIVE') {
-    const isCorroborated = amountCorrelation === 'MATCHED';
-    return {
-      verdict: isCorroborated ? 'CRITICAL_INTENT_DISPARITY' : 'HIGH_INTENT_DISPARITY',
-      tone: 'critical',
-      badge: isCorroborated ? 'Critical Disparity' : 'High Disparity',
-      title: 'Reverse-Charge Scam Vector Detected',
-      claimText: `Sender claims funds were sent or refund is waiting (${formatAmount(intent.amount)}).`,
-      actionText: `Payload executes an OUTGOING DEBIT of ${formatAmount(parsedUri.am)} to ${parsedUri.pn}.`,
-      correlationText: amountCorrelation === 'MATCHED' ? 'Exact Match (Stated incoming sum matches outgoing debit payload)' : 'Uncorroborated Sum',
-      reason: 'UPI protocol does not require scanning a QR code or entering a PIN to receive funds. Entering PIN will debit your balance.',
-      recommendation: 'Abort transaction immediately. Never input your UPI PIN to claim money or prizes.',
-      parsedUri
-    };
-  }
-
-  if (intent.type === 'SEND') {
-    if (intent.amount !== null && parsedUri.am !== null && amountCorrelation === 'MISMATCHED') {
-      return {
-        verdict: 'HIGH_INTENT_DISPARITY',
-        tone: 'critical',
-        badge: 'Amount Disparity',
-        title: 'Payment Amount Mismatch',
-        claimText: `User stated intent to pay ${formatAmount(intent.amount)}.`,
-        actionText: `Payload requests an outgoing payment of ${formatAmount(parsedUri.am)} to ${parsedUri.pn}.`,
-        correlationText: 'Mismatched Amount',
-        reason: 'The transaction debit payload does not match the sum stated in surrounding communication.',
-        recommendation: 'Verify why the beneficiary has requested a different amount than discussed.',
-        parsedUri
-      };
-    }
-    return {
-      verdict: 'NO_DISPARITY_DETECTED',
-      tone: 'safe',
-      badge: 'No Disparity Detected',
-      title: 'Intent & Protocol Payload Aligned',
-      claimText: `User stated intent to pay ${formatAmount(intent.amount)}.`,
-      actionText: `Payload requests an outgoing payment of ${formatAmount(parsedUri.am)} to ${parsedUri.pn}.`,
-      correlationText: amountCorrelation === 'MATCHED' ? 'Corroborated Sum' : 'Consistent Direction',
-      reason: 'The contextual communication matches the outgoing debit nature of the payload string.',
-      recommendation: 'Standard payment caution applies. Verify beneficiary name before entering PIN.',
-      parsedUri
-    };
-  }
-
-  return {
-    verdict: 'INSUFFICIENT_CONTEXT',
-    tone: 'caution',
-    badge: 'Insufficient Context',
-    title: 'Indeterminate Context Boundary',
-    claimText: messageText.trim() ? (intent.hasNegation ? 'Message contains negation phrasing.' : 'No unambiguous directional intent classified.') : 'No surrounding message provided.',
-    actionText: `Payload requests an outgoing debit of ${formatAmount(parsedUri.am)} to ${parsedUri.pn}.`,
-    correlationText: 'Unavailable',
-    reason: 'System could not establish whether the user intended to send or receive funds.',
-    recommendation: 'Manually verify beneficiary details directly inside your official banking application.',
-    parsedUri
-  };
-};
-
-const TEST_BATTERY = [
-  { id: 1, scenario: 'OLX Reverse Charge Trap', text: 'Maine advance Rs 5000 bhej diye hain OLX table ke liye. QR scan karke PIN dalo aur accept karo.', uri: 'upi://pay?pa=fakeofficer99@ybl&pn=Army%20HQ%20Canteen&am=5000&cu=INR&mode=02', is_deception: true, expected_verdict: 'CRITICAL_INTENT_DISPARITY' },
-  { id: 2, scenario: 'Fake Refund Processing', text: 'Aapka Rs 2500 ka electricity refund approve ho gaya hai. Approve karke credit receive karo.', uri: 'upi://pay?pa=refundbot@axisbank&pn=Discom%20Refund&am=2500&cu=INR', is_deception: true, expected_verdict: 'CRITICAL_INTENT_DISPARITY' },
-  { id: 3, scenario: 'Chai Stall Payment', text: 'Paying tea stall breakfast snack bill Rs 45 via UPI.', uri: 'upi://pay?pa=sharmatea@okhdfcbank&pn=Sharma%20Tea%20Stall&am=45&cu=INR', is_deception: false, expected_verdict: 'NO_DISPARITY_DETECTED' },
-  { id: 4, scenario: 'Kirana Store Milk Payment', text: 'Doodh aur bread ka bill pay kar raha hu Rs 110.', uri: 'upi://pay?pa=guptakirana@icici&pn=Gupta%20General%20Store&am=110&cu=INR', is_deception: false, expected_verdict: 'NO_DISPARITY_DETECTED' },
-  { id: 5, scenario: 'Urgent Discom Intimidation', text: 'URGENT NOTICE: Power disconnected tonight by 9:30 PM due to unpaid bill. Pay Rs 120 immediately.', uri: 'upi://pay?pa=discom.billdesk@icici&pn=Discom%20Power&am=120&cu=INR', is_deception: false, expected_verdict: 'INSUFFICIENT_CONTEXT' },
-  { id: 6, scenario: 'Generic Link Without Text', text: '', uri: 'upi://pay?pa=collegerecharge@sbi&pn=Campus%20Store&am=200&cu=INR', is_deception: false, expected_verdict: 'INSUFFICIENT_CONTEXT' },
-  { id: 7, scenario: 'Broken / Malformed Scheme', text: 'Click this link to pay Rs 500', uri: 'http://scampage.com/pay?amount=500', is_deception: false, expected_verdict: 'MALFORMED_PAYLOAD' },
-  { id: 8, scenario: 'Missing VPA Parameter', text: 'Paying Rs 300 to vendor', uri: 'upi://pay?pn=Unknown&am=300', is_deception: false, expected_verdict: 'MALFORMED_PAYLOAD' },
-  { id: 9, scenario: 'Reverse Charge with Uncorroborated Amount', text: 'Maine advance bhej diya hai, PIN dalo aur accept karo.', uri: 'upi://pay?pa=scammer77@ybl&pn=QuickDeal&am=1500&cu=INR', is_deception: true, expected_verdict: 'HIGH_INTENT_DISPARITY' },
-  { id: 10, scenario: 'Normal Cab Driver Payment', text: 'Uber cab ride payment Rs 340 sent to driver.', uri: 'upi://pay?pa=driver.singh@paytm&pn=Gurpreet%20Singh&am=340&cu=INR', is_deception: false, expected_verdict: 'NO_DISPARITY_DETECTED' }
-];
-
-const PRESETS = [
+const SCAM_ARCHIVES = [
   {
-    id: 'scam',
-    title: 'OLX Reverse-Charge Trap',
-    type: 'Critical',
-    message: 'Maine advance Rs 5000 bhej diye hain OLX table ke liye. QR scan karke PIN dalo aur accept karo.',
-    uri: 'upi://pay?pa=fakeofficer99@ybl&pn=Army%20HQ%20Canteen&am=5000&cu=INR&mode=02'
+    title: { en: '1. OLX Army / Reverse Charge Trap', hi: '1. OLX आर्मी / रिवर्स-चार्ज जाल' },
+    victim: {
+      en: 'Buyer claims they transferred advance money and sends a QR saying "Scan and enter PIN to accept funds".',
+      hi: 'सामने वाला एडवांस भेजने का दावा करके क्यूआर भेजता है कि "पैसे पाने के लिए स्कैन करके पिन डालो"।'
+    },
+    rule: {
+      en: 'You NEVER need a UPI PIN to receive money. PIN is strictly used to debit your account.',
+      hi: 'पैसे प्राप्त करने के लिए कभी पिन नहीं लगता। पिन डालने से हमेशा आपके खाते से पैसे कटते हैं।'
+    }
   },
   {
-    id: 'urgency',
-    title: 'Electricity Intimidation Demand',
-    type: 'Caution',
-    message: 'URGENT NOTICE: Power disconnected tonight by 9:30 PM due to unpaid bill. Pay Rs 120 immediately.',
-    uri: 'upi://pay?pa=discom.billdesk@icici&pn=Discom%20Power&am=120&cu=INR'
+    title: { en: '2. Electricity Disconnection Urgent Threat', hi: '2. बिजली कटने की धमकी वाला मैसेज' },
+    victim: {
+      en: 'SMS claims power will be disconnected at 9:30 PM due to unpaid bill; demands instant bill desk payment.',
+      hi: 'मैसेज आता है कि आज रात बिजली काट दी जाएगी, तुरंत बिल का भुगतान दिए गए लिंक पर करें।'
+    },
+    rule: {
+      en: 'Discoms never collect arrears via personal SMS UPI links. Pay only on the official state portal or app.',
+      hi: 'बिजली कंपनियां कभी व्यक्तिगत SMS पर UPI लिंक नहीं भेजतीं। केवल आधिकारिक पोर्टल या ऐप से भरें।'
+    }
   },
   {
-    id: 'kirana',
-    title: 'Legitimate Chai Stall Checkout',
-    type: 'Safe',
-    message: 'Paying tea stall breakfast snack bill Rs 45 via UPI.',
-    uri: 'upi://pay?pa=sharmatea@okhdfcbank&pn=Sharma%20Tea%20Stall&am=45&cu=INR'
+    title: { en: '3. Fake Search Engine Customer Care / Refund', hi: '3. गूगल सर्च से मिला फर्जी कस्टमर केयर / रिफंड' },
+    victim: {
+      en: 'Fake support number sends a refund link asking to authorize ₹1 to verify your bank.',
+      hi: 'फर्जी सपोर्ट नंबर रिफंड के नाम पर ₹1 का लिंक भेजकर खाते से पूरी रकम खींच लेता है।'
+    },
+    rule: {
+      en: 'Legitimate refunds are directly credited via IMPS/NEFT; no link authorization required.',
+      hi: 'असली रिफंड सीधे आपके खाते में क्रेडिट होता है, उसके लिए किसी लिंक को ऑथराइज नहीं करना पड़ता।'
+    }
+  },
+  {
+    title: { en: '4. Telegram Part-Time Like/Review Scam', hi: '4. पार्ट-टाइम टास्क / गूगल रिव्यू स्कैम' },
+    victim: {
+      en: 'Initial tasks pay ₹150; victim is then lured into "prepaid merchant tasks" requiring large UPI deposits.',
+      hi: 'शुरुआत में ₹100-200 देकर विश्वास जीतते हैं, फिर बड़े "प्रीपेड टास्क" के नाम पर लाखों रुपये UPI करवाते हैं।'
+    },
+    rule: {
+      en: 'Any scheme asking for money to release earned profits is 100% fraudulent.',
+      hi: 'कमाई निकालने के लिए पहले पैसे जमा करने को कहने वाली हर स्कीम 100% फ्रॉड होती है।'
+    }
+  },
+  {
+    title: { en: '5. Fastag / SIM KYC Expiry Warning', hi: '5. फास्टैग / सिम कार्ड केवाईसी एक्सपायरी' },
+    victim: {
+      en: 'Fake urgency stating SIM card or Fastag will be blocked within 24 hours without immediate UPI charge.',
+      hi: 'सिम या फास्टैग ब्लॉक होने की फर्जी चेतावनी देकर ₹10 का अपडेट लिंक भेजते हैं।'
+    },
+    rule: {
+      en: 'KYC updates never occur over third-party payment requests.',
+      hi: 'केवाईसी प्रक्रिया कभी भी किसी अनधिकृत पेमेंट लिंक के जरिए नहीं की जाती।'
+    }
   }
 ];
 
 export default function App() {
-  const [activeNav, setActiveNav] = useState('dashboard');
-  const [selectedPresetId, setSelectedPresetId] = useState('scam');
-  const [message, setMessage] = useState(PRESETS[0].message);
-  const [uri, setUri] = useState(PRESETS[0].uri);
-  const [analysis, setAnalysis] = useState(() => evaluateDisparity(PRESETS[0].message, PRESETS[0].uri));
-  const [isStale, setIsStale] = useState(false);
-  const [activeTab, setActiveTab] = useState('all');
-  
-  // Clean zero-state: No seeded artificial transactions
-  const [vectorLogs, setVectorLogs] = useState([]);
-  const [counter, setCounter] = useState(100);
-  
-  const [decisionFeedback, setDecisionFeedback] = useState(null);
-  const [phoneSimAction, setPhoneSimAction] = useState(null);
-  const [evalLatency, setEvalLatency] = useState(0.8);
+  const [lang, setLang] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('upi_sentinel_lang');
+      if (saved) return saved;
+      return navigator.language?.startsWith('hi') ? 'hi' : 'en';
+    }
+    return 'hi';
+  });
 
-  const benchmarkResult = useMemo(() => {
-    let tp = 0, fp = 0, tn = 0, fn = 0, passed = 0;
-    const details = TEST_BATTERY.map(item => {
-      const v = evaluateDisparity(item.text, item.uri);
-      const isPass = (v.verdict === item.expected_verdict);
-      if (isPass) passed++;
-      const flagged = (v.verdict === 'CRITICAL_INTENT_DISPARITY' || v.verdict === 'HIGH_INTENT_DISPARITY');
-      if (item.is_deception && flagged) tp++;
-      else if (!item.is_deception && flagged) fp++;
-      else if (!item.is_deception && !flagged) tn++;
-      else if (item.is_deception && !flagged) fn++;
-      return { ...item, actual_verdict: v.verdict, isPass };
-    });
-    const precision = (tp + fp) > 0 ? ((tp / (tp + fp)) * 100).toFixed(1) : 'N/A';
-    const recall = (tp + fn) > 0 ? ((tp / (tp + fn)) * 100).toFixed(1) : 'N/A';
-    const accuracy = ((passed / TEST_BATTERY.length) * 100).toFixed(1);
-    return { tp, fp, tn, fn, passed, total: TEST_BATTERY.length, precision, recall, accuracy, details };
+  const [message, setMessage] = useState('');
+  const [uri, setUri] = useState('');
+  const [analysis, setAnalysis] = useState(null);
+  const [showScanner, setShowScanner] = useState(false);
+  const [showManualInput, setShowManualInput] = useState(false);
+  const [canProceed, setCanProceed] = useState(false);
+  const [countdown, setCountdown] = useState(5);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [activeTab, setActiveTab] = useState('scan');
+  const [copiedReport, setCopiedReport] = useState(false);
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  const [fileError, setFileError] = useState('');
+
+  const fileInputRef = useRef(null);
+
+  const switchLanguage = (newLang) => {
+    setLang(newLang);
+    localStorage.setItem('upi_sentinel_lang', newLang);
+  };
+
+  useEffect(() => {
+    document.documentElement.lang = lang;
+  }, [lang]);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
   }, []);
 
-  const handleRunAnalysis = (m = message, u = uri) => {
-    const start = performance.now();
-    const result = evaluateDisparity(m, u);
-    const end = performance.now();
-    setEvalLatency(parseFloat((end - start).toFixed(2)));
-    setAnalysis(result);
-    setIsStale(false);
-    setDecisionFeedback(null);
-    setPhoneSimAction(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('demo') === '1') {
+      applyPreset(DEMO_PRESETS[0]);
+      return;
+    }
 
-    const nextId = counter + 1;
-    setCounter(nextId);
-    const newEntry = {
-      id: `SIM-${nextId}`,
-      payee: result.parsedUri ? result.parsedUri.pn : 'Unverified Payload',
-      amount: result.parsedUri && result.parsedUri.am !== null ? result.parsedUri.am : null,
-      text: m,
-      uri: u,
-      verdict: result.verdict,
-      tone: result.tone,
-      time: new Date().toLocaleTimeString()
-    };
-    setVectorLogs(prev => [newEntry, ...prev.slice(0, 19)]);
+    const { rawUri, rawContext } = extractSharedPayload(params);
+    if (rawUri || rawContext) {
+      const activeUri = rawUri || '';
+      const activeMsg = rawContext || '';
+      setMessage(activeMsg);
+      setUri(activeUri);
+
+      if (/[\u0900-\u097F]/.test(activeMsg)) {
+        switchLanguage('hi');
+      }
+
+      const res = evaluateDisparity(activeMsg, activeUri);
+      setAnalysis(res);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, []);
+
+  const isDanger = analysis?.verdict === 'CRITICAL_INTENT_DISPARITY' || analysis?.verdict === 'HIGH_INTENT_DISPARITY';
+  const isCaution = analysis?.verdict === 'INSUFFICIENT_CONTEXT';
+  const isSafe = analysis?.verdict === 'NO_DISPARITY_DETECTED';
+  const isMalformed = analysis?.verdict === 'MALFORMED_PAYLOAD';
+
+  useEffect(() => {
+    setCanProceed(false);
+    const timerDuration = isDanger ? 5 : (isCaution ? 2 : 0);
+    setCountdown(timerDuration);
+
+    if (timerDuration > 0) {
+      if (typeof window !== 'undefined' && 'navigator' in window && navigator.vibrate) {
+        navigator.vibrate(isDanger ? [120, 60, 120] : [80]);
+      }
+
+      const timer = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(timer);
+            setCanProceed(true);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      return () => clearInterval(timer);
+    } else {
+      setCanProceed(true);
+    }
+  }, [analysis, isDanger, isCaution]);
+
+  const runCheck = (m = message, u = uri) => {
+    if (!m && !u) return;
+    const res = evaluateDisparity(m, u);
+    setAnalysis(res);
   };
 
-  const handlePresetChange = (preset) => {
-    setSelectedPresetId(preset.id);
+  // Instant Intent Chip handler for retail QR codes
+  const handleIntentSelection = (intentType) => {
+    let syntheticContext = message;
+    if (intentType === 'shopping') {
+      syntheticContext = 'Dukaan par saman khareed raha hu bill payment';
+    } else if (intentType === 'receive') {
+      syntheticContext = 'Mujhe samne wale se paisa receive karna tha refund';
+    } else if (intentType === 'urgency') {
+      syntheticContext = 'Urgent call karke officer ne bola abhi turant pay karo';
+    }
+    setMessage(syntheticContext);
+    runCheck(syntheticContext, uri);
+  };
+
+  const applyPreset = (preset) => {
     setMessage(preset.message);
     setUri(preset.uri);
-    handleRunAnalysis(preset.message, preset.uri);
+    const res = evaluateDisparity(preset.message, preset.uri);
+    setAnalysis(res);
   };
 
-  const handleResetSandbox = () => {
-    setSelectedPresetId('scam');
-    setMessage(PRESETS[0].message);
-    setUri(PRESETS[0].uri);
-    setAnalysis(evaluateDisparity(PRESETS[0].message, PRESETS[0].uri));
-    setIsStale(false);
-    setVectorLogs([]);
-    setCounter(100);
-    setDecisionFeedback(null);
-    setPhoneSimAction(null);
+  const handleScannedCode = (scanned) => {
+    setShowScanner(false);
+    if (scanned) {
+      setUri(scanned);
+      runCheck(message, scanned);
+    }
   };
 
-  const dynamicMetrics = useMemo(() => {
-    const totalCount = vectorLogs.length;
-    const totalVolume = vectorLogs.reduce((acc, curr) => acc + (typeof curr.amount === 'number' ? curr.amount : 0), 0);
-    const flaggedCount = vectorLogs.filter(v => v.tone === 'critical' || v.tone === 'caution').length;
-    const benignCount = vectorLogs.filter(v => v.tone === 'safe').length;
-    const passRate = totalCount > 0 ? ((benignCount / totalCount) * 100).toFixed(1) : '—';
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    setFileError('');
+    if (!file) return;
 
-    return {
-      totalVolume: totalCount > 0 ? formatAmount(totalVolume) : 'Rs 0.00',
-      evaluations: `${flaggedCount} flagged / ${totalCount} runs`,
-      benignPassRate: totalCount > 0 ? `${passRate}%` : '—'
-    };
-  }, [vectorLogs]);
+    const url = URL.createObjectURL(file);
+    try {
+      const { BrowserQRCodeReader } = await import('@zxing/browser');
+      const reader = new BrowserQRCodeReader();
+      const res = await reader.decodeFromImageUrl(url);
+      if (res && res.getText()) {
+        handleScannedCode(res.getText());
+      } else {
+        setFileError(lang === 'hi' ? 'इस फोटो में क्यूआर कोड नहीं मिला।' : 'No QR code found in this image.');
+      }
+    } catch {
+      setFileError(lang === 'hi' ? 'क्यूआर पढ़ने में असमर्थ। कृपया साफ फोटो चुनें।' : 'Could not decode QR. Please select a clearer photo.');
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  };
 
-  const filteredLogs = useMemo(() => {
-    return vectorLogs.filter(v => {
-      if (activeTab === 'flagged') return v.tone === 'critical' || v.tone === 'caution';
-      if (activeTab === 'benign') return v.tone === 'safe';
-      return true;
+  const handleReset = () => {
+    setMessage('');
+    setUri('');
+    setAnalysis(null);
+    setShowManualInput(false);
+    setCopiedReport(false);
+    setFileError('');
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  };
+
+  const verdictMeta = analysis ? (VERDICT_I18N[analysis.verdict] || VERDICT_I18N.INSUFFICIENT_CONTEXT) : null;
+  const payeeDisplay = analysis?.parsedUri?.pn || analysis?.parsedUri?.pa || (lang === 'hi' ? 'प्राप्तकर्ता' : 'Payee');
+  const amountDisplay = analysis?.parsedUri?.am || '';
+
+  const speakVerdict = () => {
+    if (!('speechSynthesis' in window) || !verdictMeta) return;
+    window.speechSynthesis.cancel();
+
+    if (isSpeaking) {
+      setIsSpeaking(false);
+      return;
+    }
+
+    const titleText = verdictMeta.title[lang] || verdictMeta.title.en;
+    const oneLiner = verdictMeta.oneLiner(amountDisplay, payeeDisplay)[lang] || '';
+    const actionText = verdictMeta.actionText[lang] || verdictMeta.actionText.en;
+
+    const textToRead = `${titleText}. ${oneLiner} ${actionText}`;
+
+    const u = new SpeechSynthesisUtterance(textToRead);
+    u.lang = lang === 'hi' ? 'hi-IN' : 'en-IN';
+    u.rate = 0.92;
+    u.onend = () => setIsSpeaking(false);
+    u.onerror = () => setIsSpeaking(false);
+
+    setIsSpeaking(true);
+    window.speechSynthesis.speak(u);
+  };
+
+  const payHref = (analysis?.parsedUri?.rawUri && analysis.parsedUri.rawUri.startsWith('upi://')) 
+    ? analysis.parsedUri.rawUri 
+    : (uri.trim().startsWith('upi://') ? uri.trim() : null);
+
+  const copyReportPack = () => {
+    const reportText = `[CYBERCRIME REPORT PACK - UPI SENTINEL ADVISORY]
+Assessment: ${verdictMeta?.title.en}
+Severity: ${verdictMeta?.badge.en}
+Payee Name: ${analysis?.parsedUri?.pn || 'Unknown Payee'}
+Payee VPA: ${analysis?.parsedUri?.pa || 'Not Available'}
+Amount Claimed: ₹${analysis?.parsedUri?.am || 'Not Specified'}
+Flagged Reason: ${verdictMeta?.reason.en}
+Timestamp: ${new Date().toLocaleString('en-IN')}
+Status: Flagged by UPI Sentinel heuristic tool (Advisory only, not bank record).
+
+-- AGAR PAISE KAT GAYE HAIN TO NEECHE DETAILS BHAR KAR 1930 PAR DEIN --
+Bank Name: 
+Account No (Last 4 digits): 
+Txn Ref / UTR No: 
+Exact Time of Debit: `;
+
+    navigator.clipboard.writeText(reportText).then(() => {
+      setCopiedReport(true);
+      setTimeout(() => setCopiedReport(false), 3000);
     });
-  }, [vectorLogs, activeTab]);
+  };
+
+  const shareToFamily = () => {
+    const alertMsg = encodeURIComponent(
+      lang === 'hi'
+        ? `⚠️ सावधान! मुझे ${payeeDisplay} के नाम से ₹${amountDisplay || 'पैसे'} कटने का संदिग्ध UPI पेमेंट लिंक आया था।\n\n` +
+          `UPI Sentinel ने इसे संभावित रिवर्स-चार्ज धोखाधड़ी के रूप में फ्लैग किया है।\n` +
+          `ध्यान रखें: पैसे प्राप्त करने या रिफंड के लिए कभी भी UPI PIN दर्ज न करें!`
+        : `⚠️ Alert! I received a suspicious UPI payment link from ${payeeDisplay} requesting ₹${amountDisplay || 'funds'}.\n\n` +
+          `UPI Sentinel flagged this as a probable reverse-charge scam trap.\n` +
+          `Never enter your UPI PIN to receive money or refunds!`
+    );
+    window.open(`https://wa.me/?text=${alertMsg}`, '_blank');
+  };
 
   return (
-    <div className="min-h-screen bg-[#F4F5F7] text-[#1E293B] font-sans antialiased flex">
-      {/* Sidebar with Button Semantics */}
-      <aside className="w-16 bg-[#0F172A] flex flex-col items-center py-6 justify-between shrink-0">
-        <div className="flex flex-col items-center space-y-8">
-          <button 
-            onClick={() => setActiveNav('dashboard')}
-            aria-label="UPI Sentinel Dashboard"
-            className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-md font-bold text-lg cursor-pointer hover:bg-blue-500 transition-colors"
-          >
-            S
-          </button>
-          <nav className="flex flex-col space-y-5 text-slate-400">
-            <button 
-              onClick={() => setActiveNav('dashboard')}
-              aria-label="Simulation Workspace"
-              title="Simulation Workspace"
-              className={`p-2.5 rounded-xl transition-all cursor-pointer ${
-                activeNav === 'dashboard' ? 'text-white bg-slate-800 shadow-xs' : 'hover:text-white hover:bg-slate-800/60'
-              }`}
-            >
-              <Activity className="w-5 h-5" />
-            </button>
-            <button 
-              onClick={() => setActiveNav('threats')}
-              aria-label="Deterministic Benchmark Suite"
-              title="Deterministic Benchmark Suite"
-              className={`p-2.5 rounded-xl transition-all cursor-pointer ${
-                activeNav === 'threats' ? 'text-white bg-slate-800 shadow-xs' : 'hover:text-white hover:bg-slate-800/60'
-              }`}
-            >
-              <ShieldCheck className="w-5 h-5" />
-            </button>
-            <button 
-              onClick={() => setActiveNav('vectors')}
-              aria-label="Evaluation Ledger"
-              title="Evaluation Ledger"
-              className={`p-2.5 rounded-xl transition-all cursor-pointer ${
-                activeNav === 'vectors' ? 'text-white bg-slate-800 shadow-xs' : 'hover:text-white hover:bg-slate-800/60'
-              }`}
-            >
-              <Layers className="w-5 h-5" />
-            </button>
-            <button 
-              onClick={() => setActiveNav('settings')}
-              aria-label="Engine Specifications"
-              title="Engine Specifications"
-              className={`p-2.5 rounded-xl transition-all cursor-pointer ${
-                activeNav === 'settings' ? 'text-white bg-slate-800 shadow-xs' : 'hover:text-white hover:bg-slate-800/60'
-              }`}
-            >
-              <Sliders className="w-5 h-5" />
-            </button>
-          </nav>
-        </div>
-        <div className="flex flex-col items-center space-y-4 text-slate-400">
-          <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs text-white font-medium select-none">
-            SS
-          </div>
-        </div>
-      </aside>
+    <div className="min-h-screen bg-[#050811] text-slate-100 flex flex-col font-sans relative selection:bg-cyan-500 selection:text-black">
+      
+      {/* Dynamic Ambient Background */}
+      <div 
+        className={`fixed inset-0 pointer-events-none z-0 transition-opacity duration-700 ${isDanger ? 'danger-glow' : ''}`}
+        style={{
+          background: isDanger 
+            ? 'radial-gradient(circle at 50% 15%, rgba(225, 29, 72, 0.28), transparent 75%)'
+            : isCaution
+              ? 'radial-gradient(circle at 50% 15%, rgba(245, 158, 11, 0.2), transparent 75%)'
+              : isSafe
+                ? 'radial-gradient(circle at 50% 15%, rgba(16, 185, 129, 0.2), transparent 75%)'
+                : 'radial-gradient(circle at 50% 15%, rgba(34, 211, 238, 0.15), transparent 75%)'
+        }}
+      />
 
-      <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
-        {/* Transparent System Header */}
-        <header className="h-16 bg-white border-b border-slate-200 px-8 flex items-center justify-between sticky top-0 z-30">
-          <div className="flex items-center space-x-4">
-            <h1 className="text-lg font-bold text-slate-900 tracking-tight">UPI Sentinel</h1>
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 font-medium border border-blue-100">
-              {activeNav === 'dashboard' && 'Client-Side Disparity Advisory Prototype'}
-              {activeNav === 'threats' && 'Deterministic Synthetic Baseline (10 Fixtures)'}
-              {activeNav === 'vectors' && 'Session Evaluation Ledger'}
-              {activeNav === 'settings' && 'Disparity Engine Rules Contract'}
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        accept="image/*" 
+        onChange={handleFileUpload} 
+        className="hidden" 
+        aria-label="Upload QR Image"
+      />
+
+      {showScanner && (
+        <Suspense fallback={
+          <div className="fixed inset-0 z-50 bg-[#050811]/90 backdrop-blur-md flex items-center justify-center text-cyan-400 font-mono text-xs">
+            INITIALIZING SCANNER...
+          </div>
+        }>
+          <QrScanner 
+            onPayloadScanned={handleScannedCode} 
+            onClose={() => setShowScanner(false)} 
+          />
+        </Suspense>
+      )}
+
+      {/* Floating Cyber Navbar */}
+      <header className="h-16 px-4 sm:px-6 border-b border-white/10 backdrop-blur-xl bg-[#050811]/75 sticky top-0 z-40 flex items-center justify-between">
+        <div className="flex items-center space-x-2.5">
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-cyan-400 to-blue-600 flex items-center justify-center font-black text-black text-sm shadow-[0_0_16px_rgba(34,211,238,0.4)]">
+            ₹
+          </div>
+          <div>
+            <span className="font-extrabold tracking-tight text-white text-sm sm:text-base">UPI SENTINEL</span>
+            <span className="hidden sm:inline-block text-[10px] ml-2 text-cyan-400 font-mono tracking-widest uppercase bg-cyan-950/70 border border-cyan-800/60 px-2 py-0.5 rounded-full">
+              Zero-Server
             </span>
           </div>
-          <div className="flex items-center space-x-6">
-            <div className="text-xs text-slate-500 font-mono">
-              Local Parser: <span className="font-semibold text-emerald-600">{evalLatency}ms</span>
-            </div>
-            <div className="h-4 w-px bg-slate-200" />
-            <button 
-              onClick={handleResetSandbox} 
-              className="flex items-center space-x-2 text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg transition-all cursor-pointer"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span>Reset State & Logs</span>
-            </button>
-          </div>
-        </header>
-
-        {/* Prototype Scope Banner */}
-        <div className="bg-blue-50/70 border-b border-blue-100 px-8 py-2 text-[11px] text-blue-800 flex items-center justify-between">
-          <span>
-            <strong>Simulation Sandbox:</strong> Evaluates claimed message intent against payload URI debit action. Does not intercept core banking rails or verify off-chain legal identity.
-          </span>
-          <span className="font-mono text-blue-600">Pure Client-Side Engine</span>
         </div>
 
-        {activeNav === 'dashboard' && (
-          <main className="p-8 space-y-6 max-w-7xl mx-auto w-full">
-            {/* Dynamic Session Metrics */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
-                <div className="text-xs font-medium text-slate-500 mb-1">Session Simulated Volume</div>
-                <div className="text-2xl font-bold text-slate-900">{dynamicMetrics.totalVolume}</div>
-                <div className="mt-3 flex items-center space-x-2 text-[11px] text-slate-400">
-                  <span>From {vectorLogs.length} evaluated actions</span>
-                </div>
-              </div>
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
-                <div className="text-xs font-medium text-slate-500 mb-1">Flagged for Friction</div>
-                <div className="text-2xl font-bold text-slate-900">{dynamicMetrics.evaluations}</div>
-                <div className="mt-3 flex items-center space-x-2 text-[11px] text-slate-400">
-                  <span>Critical & Cautionary advice</span>
-                </div>
-              </div>
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
-                <div className="text-xs font-medium text-slate-500 mb-1">Session Clean Intent Rate</div>
-                <div className="text-2xl font-bold text-slate-900">{dynamicMetrics.benignPassRate}</div>
-                <div className="mt-3 flex items-center space-x-2 text-[11px] text-slate-400">
-                  <span>Aligned outgoing debits</span>
-                </div>
-              </div>
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
-                <div className="text-xs font-medium text-slate-500 mb-1">Disparity Specification</div>
-                <div className="text-2xl font-bold text-blue-600">IADE v2.8</div>
-                <div className="mt-3 flex items-center space-x-1 text-[11px] text-slate-500 font-mono">
-                  <span>Rule: </span><span className="text-slate-800 font-semibold">Semantic Claim != Action</span>
-                </div>
-              </div>
+        <div className="flex items-center space-x-2">
+          {isOffline && (
+            <div className="flex items-center space-x-1 text-[11px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2.5 py-1 rounded-full">
+              <WifiOff className="w-3 h-3" />
+              <span>Offline ✓</span>
             </div>
+          )}
 
-            <div className="bg-white p-2 rounded-2xl border border-slate-200 flex flex-wrap gap-2 items-center">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 px-3 font-mono">Test Presets:</span>
-              {PRESETS.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => handlePresetChange(p)}
-                  className={`px-4 py-2 rounded-xl text-xs font-medium transition-all flex items-center space-x-2 cursor-pointer ${
-                    selectedPresetId === p.id ? 'bg-slate-900 text-white shadow-sm' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  <span className={`w-2 h-2 rounded-full ${p.type === 'Critical' ? 'bg-red-500' : p.type === 'Caution' ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-                  <span>{p.title}</span>
-                </button>
-              ))}
-            </div>
+          <button
+            type="button"
+            onClick={() => switchLanguage(lang === 'hi' ? 'en' : 'hi')}
+            className="flex items-center space-x-1 text-xs font-semibold px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 transition-colors"
+            aria-label="Switch Language"
+          >
+            <Globe className="w-3.5 h-3.5 text-cyan-400" />
+            <span>{lang === 'hi' ? 'English' : 'हिंदी'}</span>
+          </button>
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              <div className="lg:col-span-5 space-y-6">
-                <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-xs space-y-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400 font-mono">Context Telemetry</span>
-                    {isStale && <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 px-2 py-0.5 rounded">Input Edited — Not Evaluated</span>}
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1.5">Surrounding Communication Context</label>
-                    <textarea
-                      rows={3}
-                      value={message}
-                      onChange={(e) => { setMessage(e.target.value); setIsStale(true); }}
-                      className="w-full text-xs p-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white text-slate-800 resize-none font-sans leading-relaxed"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1.5">Raw UPI Payload String</label>
-                    <input
-                      type="text"
-                      value={uri}
-                      onChange={(e) => { setUri(e.target.value); setIsStale(true); }}
-                      className="w-full text-xs font-mono p-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white text-slate-800"
-                    />
-                  </div>
-                  <button
-                    onClick={() => handleRunAnalysis()}
-                    className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl transition-all shadow-sm flex items-center justify-center space-x-2 cursor-pointer"
-                  >
-                    <span>Run Disparity Engine</span>
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
+          {analysis && (
+            <button
+              type="button"
+              onClick={handleReset}
+              className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white transition-colors"
+              title={lang === 'hi' ? 'रीसेट करें' : 'Reset'}
+              aria-label="Reset Analysis"
+            >
+              <RefreshCw className="w-4 h-4 text-cyan-400" />
+            </button>
+          )}
+        </div>
+      </header>
 
-                {/* Honest Simulated Phone HUD */}
-                <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-xs flex flex-col items-center">
-                  <div className="w-full flex items-center justify-between mb-4">
-                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider font-mono">Simulated Pre-Auth HUD</span>
-                    <Smartphone className="w-4 h-4 text-slate-400" />
+      {/* Main Column */}
+      <main className="flex-1 max-w-[420px] mx-auto w-full p-4 flex flex-col justify-center relative z-10 pb-28">
+        
+        {/* TAB 1: SCANNER */}
+        {activeTab === 'scan' && (
+          <div className="space-y-4">
+
+            {analysis && verdictMeta ? (
+              /* RESULT VIEW */
+              <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200" role={isDanger ? 'alert' : 'status'}>
+                
+                {/* Boarding Pass Snapshot */}
+                <div className="bg-white/5 backdrop-blur-2xl border border-white/15 rounded-3xl p-4 sm:p-5 shadow-2xl relative overflow-hidden">
+                  <div className="flex items-center justify-between pb-3 border-b border-dashed border-white/15">
+                    <span className="text-[11px] font-mono tracking-wider uppercase text-slate-400">
+                      {lang === 'hi' ? 'भुगतान विवरण' : 'Payment Snapshot'}
+                    </span>
+                    <span className="text-xs font-mono text-cyan-400 bg-cyan-950/80 px-2 py-0.5 rounded-full border border-cyan-800/50">
+                      {lang === 'hi' ? 'फोन पर जांचा गया' : 'Analyzed on-device'}
+                    </span>
                   </div>
-                  <div className="w-full max-w-[320px] bg-slate-900 p-3 rounded-[36px] shadow-2xl">
-                    <div className="bg-[#FAFBFD] rounded-[28px] p-4 flex flex-col space-y-4 min-h-[380px] justify-between">
-                      <div className="flex justify-between items-center text-[10px] text-slate-400 px-1 pt-1 font-mono">
-                        <span>Pre-Auth Advisory HUD</span>
-                        <span className="text-slate-500 font-semibold">● SIMULATOR</span>
+
+                  <div className="pt-3.5 flex items-center justify-between gap-3">
+                    <div className="flex items-center space-x-3 min-w-0">
+                      <div className="w-11 h-11 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center font-bold text-cyan-300 text-base shrink-0">
+                        {analysis.parsedUri?.pn?.charAt(0) || 'U'}
                       </div>
-                      
-                      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs text-center space-y-1">
-                        <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Payload Target Debit</div>
-                        <div className="text-2xl font-extrabold text-slate-900">
-                          {formatAmount(analysis.parsedUri?.am)}
+                      <div className="min-w-0">
+                        <div className="font-bold text-white text-sm sm:text-base truncate">
+                          {analysis.parsedUri?.pn || (lang === 'hi' ? 'अज्ञात प्राप्तकर्ता' : 'Unknown Payee')}
                         </div>
-                        <div className="text-xs text-slate-600 font-medium truncate">To: {analysis.parsedUri?.pn || 'Unknown Payee'}</div>
+                        <div className="text-xs font-mono text-slate-400 truncate">
+                          {analysis.parsedUri?.pa || 'VPA Not Found'}
+                        </div>
                       </div>
+                    </div>
 
-                      {analysis.tone === 'critical' && (
-                        <div className="bg-red-50 border border-red-200 p-3 rounded-2xl space-y-1">
-                          <div className="flex items-center space-x-1.5 text-red-700 text-xs font-bold">
-                            <AlertOctagon className="w-4 h-4 shrink-0" />
-                            <span>Reverse-Charge Warning</span>
-                          </div>
-                          <p className="text-[11px] text-red-600 leading-tight">
-                            Entering PIN will DEBIT {formatAmount(analysis.parsedUri?.am)} from your account balance.
-                          </p>
-                        </div>
-                      )}
-
-                      {analysis.tone === 'caution' && (
-                        <div className="bg-amber-50 border border-amber-200 p-3 rounded-2xl space-y-1">
-                          <div className="flex items-center space-x-1.5 text-amber-700 text-xs font-bold">
-                            <AlertTriangle className="w-4 h-4 shrink-0" />
-                            <span>Context Caution Notice</span>
-                          </div>
-                          <p className="text-[11px] text-amber-600 leading-tight">
-                            Verify claims through official channels before proceeding with payment.
-                          </p>
-                        </div>
-                      )}
-
-                      {analysis.tone === 'neutral' && (
-                        <div className="bg-slate-100 border border-slate-200 p-3 rounded-2xl space-y-1">
-                          <div className="flex items-center space-x-1.5 text-slate-700 text-xs font-bold">
-                            <XCircle className="w-4 h-4 shrink-0" />
-                            <span>Malformed URI Scheme</span>
-                          </div>
-                          <p className="text-[11px] text-slate-600 leading-tight">
-                            Payload string is broken or unverified. Local validation refused.
-                          </p>
-                        </div>
-                      )}
-
-                      {analysis.tone === 'safe' && (
-                        <div className="bg-emerald-50 border border-emerald-200 p-3 rounded-2xl space-y-1">
-                          <div className="flex items-center space-x-1.5 text-emerald-700 text-xs font-bold">
-                            <CheckCircle2 className="w-4 h-4 shrink-0" />
-                            <span>Consistent Direction</span>
-                          </div>
-                          <p className="text-[11px] text-emerald-600 leading-tight">
-                            Context and payload are consistent. Note: Does not confirm merchant legitimacy.
-                          </p>
-                        </div>
-                      )}
-
-                      {phoneSimAction ? (
-                        <div className="p-2.5 rounded-xl text-center text-xs font-semibold bg-slate-800 text-white">
-                          {phoneSimAction}
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          <button 
-                            onClick={() => setPhoneSimAction('Simulated: Advisory Acknowledged (Aborted)')}
-                            className="w-full py-2.5 rounded-xl text-xs font-bold shadow-sm bg-red-600 hover:bg-red-700 text-white cursor-pointer active:scale-95 transition-all"
-                          >
-                            Simulate Reject Action
-                          </button>
-                          {analysis.tone === 'safe' && (
-                            <button 
-                              onClick={() => setPhoneSimAction('Simulated: User Proceeded (Demo only)')}
-                              className="w-full py-2 rounded-xl text-xs font-semibold bg-slate-200 hover:bg-slate-300 text-slate-700 cursor-pointer transition-all"
-                            >
-                              Simulate Authorize (Demo only)
-                            </button>
-                          )}
-                        </div>
-                      )}
+                    <div className="text-right shrink-0">
+                      <div className="text-[10px] text-slate-400 uppercase font-mono">
+                        {lang === 'hi' ? 'कटने वाली रकम' : 'Debit Amount'}
+                      </div>
+                      <div className="text-xl sm:text-2xl font-black font-mono text-white tracking-tight">
+                        {analysis.parsedUri?.am ? `₹${analysis.parsedUri.am}` : '₹--'}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="lg:col-span-7 space-y-6">
-                <div className="bg-white rounded-3xl border border-slate-200 shadow-xs p-8 space-y-6">
-                  <div className="flex items-center justify-between pb-6 border-b border-slate-100">
-                    <div>
-                      <span className={`text-[11px] font-bold uppercase tracking-wider px-3 py-1 rounded-full font-mono ${
-                        analysis.tone === 'critical' ? 'bg-red-50 text-red-700 border border-red-200' :
-                        analysis.tone === 'safe' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
-                        analysis.tone === 'neutral' ? 'bg-slate-100 text-slate-700 border border-slate-200' :
-                        'bg-amber-50 text-amber-700 border border-amber-200'
-                      }`}>
-                        {analysis.badge}
-                      </span>
-                      <h2 className="text-xl font-extrabold text-slate-900 mt-3">{analysis.title}</h2>
-                    </div>
-                    <div className="text-right">
-                      <span className="text-xs text-slate-400 font-mono block">EVALUATOR VERDICT</span>
-                      <span className="text-xs font-bold font-mono text-slate-800">{analysis.verdict}</span>
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-50 border border-slate-200 rounded-2xl divide-y divide-slate-200 text-xs">
-                    <div className="p-4 grid grid-cols-1 md:grid-cols-12 gap-3">
-                      <div className="md:col-span-4 font-mono font-bold text-slate-400 uppercase text-[11px]">1. Claimed Intent</div>
-                      <div className="md:col-span-8 text-slate-900 font-medium">{analysis.claimText}</div>
-                    </div>
-                    <div className="p-4 grid grid-cols-1 md:grid-cols-12 gap-3">
-                      <div className="md:col-span-4 font-mono font-bold text-slate-400 uppercase text-[11px]">2. Payload Action</div>
-                      <div className="md:col-span-8 text-slate-900 font-medium">{analysis.actionText}</div>
-                    </div>
-                    <div className="p-4 grid grid-cols-1 md:grid-cols-12 gap-3">
-                      <div className="md:col-span-4 font-mono font-bold text-slate-400 uppercase text-[11px]">3. Corroboration</div>
-                      <div className="md:col-span-8 text-slate-800">{analysis.correlationText}</div>
-                    </div>
-                    <div className="p-4 grid grid-cols-1 md:grid-cols-12 gap-3">
-                      <div className="md:col-span-4 font-mono font-bold text-slate-400 uppercase text-[11px]">4. Disparity Finding</div>
-                      <div className="md:col-span-8 text-slate-600 leading-relaxed">{analysis.reason}</div>
-                    </div>
-                    <div className="p-4 grid grid-cols-1 md:grid-cols-12 gap-3 bg-white rounded-b-2xl">
-                      <div className="md:col-span-4 font-mono font-bold text-blue-600 uppercase text-[11px]">5. Advisory Notice</div>
-                      <div className="md:col-span-8 font-semibold text-slate-900">{analysis.recommendation}</div>
-                    </div>
-                  </div>
-
-                  <div className="p-5 rounded-2xl border border-slate-200 bg-white shadow-xs space-y-4">
+                {/* Verdict Card */}
+                <div className={`p-5 sm:p-6 rounded-3xl border shadow-2xl transition-all relative overflow-hidden ${
+                  isDanger
+                    ? 'bg-gradient-to-b from-rose-950/90 to-rose-900/60 border-rose-500/50 shadow-[0_0_50px_rgba(244,63,94,0.3)]'
+                    : isCaution
+                      ? 'bg-gradient-to-b from-amber-950/90 to-amber-900/60 border-amber-500/50 shadow-[0_0_50px_rgba(245,158,11,0.25)]'
+                      : isSafe
+                        ? 'bg-gradient-to-b from-emerald-950/90 to-emerald-900/60 border-emerald-500/50 shadow-[0_0_50px_rgba(16,185,129,0.3)]'
+                        : 'bg-gradient-to-b from-slate-900/90 to-slate-950/90 border-slate-700/60'
+                }`}>
+                  <div className="flex items-start justify-between gap-3">
                     <div className="flex items-center space-x-3">
-                      <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-600">
-                        <CreditCard className="w-5 h-5" />
-                      </div>
+                      {isDanger && (
+                        <div className="p-2.5 bg-rose-600/30 rounded-2xl border border-rose-500/40 text-rose-400">
+                          <ShieldAlert className="w-6 h-6" />
+                        </div>
+                      )}
+                      {isCaution && (
+                        <div className="p-2.5 bg-amber-600/30 rounded-2xl border border-amber-500/40 text-amber-400">
+                          <AlertTriangle className="w-6 h-6" />
+                        </div>
+                      )}
+                      {isSafe && (
+                        <div className="p-2.5 bg-emerald-600/30 rounded-2xl border border-emerald-500/40 text-emerald-400">
+                          <ShieldCheck className="w-6 h-6" />
+                        </div>
+                      )}
+                      {isMalformed && (
+                        <div className="p-2.5 bg-slate-700/40 rounded-2xl border border-slate-600 text-slate-300">
+                          <HelpCircle className="w-6 h-6" />
+                        </div>
+                      )}
                       <div>
-                        <div className="text-sm font-bold text-slate-900">{analysis.parsedUri?.pn || 'Payee Check'}</div>
-                        <div className="text-xs text-slate-500 font-mono">{analysis.parsedUri?.pa || 'N/A'}</div>
-                      </div>
-                      <div className="ml-auto text-right">
-                        <div className="text-base font-extrabold text-slate-900">{formatAmount(analysis.parsedUri?.am)}</div>
-                        <div className="text-[10px] text-slate-400 font-mono">INR Outgoing Debit</div>
+                        <span className="text-[10px] font-mono tracking-widest uppercase text-white/80 block">
+                          {verdictMeta.badge[lang] || verdictMeta.badge.en}
+                        </span>
+                        <h2 className="text-lg sm:text-xl font-black text-white tracking-tight">
+                          {verdictMeta.title[lang] || verdictMeta.title.en}
+                        </h2>
                       </div>
                     </div>
 
-                    {decisionFeedback ? (
-                      <div className={`p-3.5 rounded-xl text-xs font-medium border flex items-center justify-between ${
-                        decisionFeedback.type === 'cancel'
-                          ? 'bg-red-50 text-red-700 border-red-200'
-                          : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                      }`}>
-                        <span>{decisionFeedback.msg}</span>
-                        <button 
-                          onClick={() => setDecisionFeedback(null)} 
-                          className="text-[11px] underline ml-2 font-semibold cursor-pointer"
-                        >
-                          Reset Decision
-                        </button>
+                    <button
+                      type="button"
+                      onClick={speakVerdict}
+                      className="p-2.5 rounded-2xl bg-white/10 hover:bg-white/20 text-white transition-all border border-white/15"
+                      title={lang === 'hi' ? 'बोलकर सुनें' : 'Speak'}
+                      aria-label="Speak Verdict"
+                    >
+                      <Volume2 className={`w-5 h-5 ${isSpeaking ? 'text-cyan-400 animate-pulse' : 'text-slate-200'}`} />
+                    </button>
+                  </div>
+
+                  {/* Shocker Debit Tag */}
+                  <div className="my-4 p-3.5 rounded-2xl bg-black/60 border border-white/10 space-y-1.5">
+                    {isDanger && analysis.parsedUri?.am && (
+                      <div className="text-3xl font-black text-rose-400 leading-tight font-mono tracking-tight">
+                        −₹{analysis.parsedUri.am}
                       </div>
-                    ) : (
-                      <div className="grid grid-cols-2 gap-3 pt-2">
-                        <button 
-                          onClick={() => setDecisionFeedback({ type: 'cancel', msg: 'Simulation: User rejected debit advisory. No funds moved.' })}
-                          className="py-2.5 px-4 rounded-xl text-xs font-bold bg-red-600 hover:bg-red-700 active:scale-95 text-white transition-all cursor-pointer shadow-sm"
+                    )}
+                    <div className="text-sm sm:text-base font-bold text-white leading-snug">
+                      {verdictMeta.oneLiner(amountDisplay, payeeDisplay)[lang] || verdictMeta.oneLiner(amountDisplay, payeeDisplay).en}
+                    </div>
+                    <div className="text-xs text-amber-300 font-semibold pt-0.5">
+                      {verdictMeta.actionText[lang] || verdictMeta.actionText.en}
+                    </div>
+                  </div>
+
+                  {/* Dynamic Staggered Signal Chips */}
+                  {analysis.signals && analysis.signals.filter(s => s.weight > 0 && SIGNAL_I18N[s.id]).length > 0 && (
+                    <div className="py-2 flex flex-wrap gap-1.5">
+                      {analysis.signals.filter(s => s.weight > 0 && SIGNAL_I18N[s.id]).map((s, i) => (
+                        <span
+                          key={s.id}
+                          style={{ animationDelay: `${i * 100}ms` }}
+                          className="chip-in text-[11px] px-2.5 py-1 rounded-full bg-white/10 border border-white/15 text-slate-200 font-medium"
                         >
-                          Simulate Abort
-                        </button>
-                        <button 
-                          onClick={() => setDecisionFeedback({ type: 'authorize', msg: 'Simulation: User acknowledged & authorized (Demo bypass).' })}
-                          className="py-2.5 px-4 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 transition-all cursor-pointer"
-                        >
-                          Simulate Authorize
-                        </button>
+                          {SIGNAL_I18N[s.id][lang] || SIGNAL_I18N[s.id].en}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Signals Advice */}
+                  <div className="space-y-1 text-xs text-slate-300 pt-1">
+                    <div>
+                      <span className="font-bold text-white">{lang === 'hi' ? 'कारण: ' : 'Reason: '}</span> 
+                      {verdictMeta.reason[lang] || verdictMeta.reason.en}
+                    </div>
+                    <div>
+                      <span className="font-bold text-white">{lang === 'hi' ? 'सलाह: ' : 'Advice: '}</span> 
+                      {verdictMeta.recommendation[lang] || verdictMeta.recommendation.en}
+                    </div>
+                  </div>
+
+                  {/* Decision Actions */}
+                  <div className="mt-5 pt-4 border-t border-white/10 flex flex-col sm:flex-row gap-2.5 items-center">
+                    <button
+                      type="button"
+                      onClick={handleReset}
+                      className="w-full sm:flex-1 py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-black font-extrabold text-xs shadow-[0_0_20px_rgba(16,185,129,0.35)] transition-all flex items-center justify-center space-x-1.5"
+                    >
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>{lang === 'hi' ? 'सुरक्षित रहें, लिंक हटाएं' : 'Stay Safe, Dismiss'}</span>
+                    </button>
+
+                    {isDanger && (
+                      <div className="text-center w-full sm:w-auto">
+                        {canProceed && payHref ? (
+                          <a
+                            href={payHref}
+                            className="text-xs text-slate-400 hover:text-white underline font-medium p-1.5 block"
+                          >
+                            {lang === 'hi' ? 'फिर भी आगे बढ़ें' : 'Proceed anyway'}
+                          </a>
+                        ) : (
+                          <span className="text-[11px] text-rose-300/70 font-mono block p-1.5">
+                            {lang === 'hi' ? `${countdown} सेकंड में अनलॉक होगा...` : `Unlocked in ${countdown}s...`}
+                          </span>
+                        )}
                       </div>
+                    )}
+
+                    {isCaution && payHref && (
+                      <div className="text-center w-full sm:w-auto">
+                        {canProceed ? (
+                          <a
+                            href={payHref}
+                            className="py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs inline-flex items-center space-x-1"
+                          >
+                            <span>{lang === 'hi' ? 'सावधानी से आगे बढ़ें' : 'Continue with Caution'}</span>
+                            <ExternalLink className="w-3.5 h-3.5 ml-1" />
+                          </a>
+                        ) : (
+                          <span className="text-[11px] text-amber-300/80 font-mono block p-1.5">
+                            {lang === 'hi' ? `${countdown} सेकंड रुकें...` : `Wait ${countdown}s...`}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {isSafe && payHref && (
+                      <a
+                        href={payHref}
+                        className="w-full sm:w-auto py-3.5 px-5 rounded-2xl bg-cyan-400 hover:bg-cyan-300 text-black font-bold text-xs text-center flex items-center justify-center space-x-1 shadow-[0_0_20px_rgba(34,211,238,0.3)]"
+                      >
+                        <span>{lang === 'hi' ? 'यूपीआई ऐप में खोलें' : 'Open UPI App'}</span>
+                        <ExternalLink className="w-4 h-4 ml-1" />
+                      </a>
                     )}
                   </div>
 
-                  <div className="flex items-start space-x-3 text-slate-400 text-[11px] leading-relaxed pt-2">
-                    <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>
-                      <strong>Evaluator Boundary:</strong> NO_DISPARITY_DETECTED implies contextual direction and payload parameters match. It is not an assertion of legal identity or merchant credibility.
-                    </span>
+                  {/* Danger Utilities */}
+                  {isDanger && (
+                    <div className="mt-4 pt-3.5 border-t border-white/10 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={shareToFamily}
+                        className="py-2.5 px-3 rounded-xl bg-emerald-950/60 hover:bg-emerald-900/60 border border-emerald-800/60 text-emerald-300 text-xs font-semibold flex items-center justify-center space-x-1.5 transition-colors"
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                        <span>{lang === 'hi' ? 'फैमिली को भेजें' : 'Share with Family'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={copyReportPack}
+                        className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center justify-center space-x-1.5 transition-colors"
+                      >
+                        <Copy className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>{copiedReport ? (lang === 'hi' ? 'कॉपी हुआ ✓' : 'Copied ✓') : 'Report Pack'}</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+
+              /* HERO SCANNER SCREEN */
+              <div className="flex flex-col items-center justify-center space-y-4 pt-1">
+                
+                {/* Contextual Hook */}
+                <div className="inline-flex items-center space-x-1.5 bg-cyan-950/60 border border-cyan-800/50 px-3 py-1 rounded-full text-xs text-cyan-300 text-center font-medium shadow-md">
+                  <AlertTriangle className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                  <span>
+                    {lang === 'hi' 
+                      ? 'कोई पैसा भेजने को कह रहा है? पहले यहाँ चेक करें।' 
+                      : 'Someone claims they sent money? Verify here first.'}
+                  </span>
+                </div>
+
+                {/* Radar Ring */}
+                <div className="relative flex items-center justify-center my-1">
+                  <div className="w-[min(55vw,220px)] h-[min(55vw,220px)] rounded-full border border-cyan-500/25 flex items-center justify-center relative radar-ring">
+                    <div className="w-[min(44vw,176px)] h-[min(44vw,176px)] rounded-full border border-cyan-500/40 flex items-center justify-center shadow-[0_0_45px_rgba(34,211,238,0.25)]">
+                      <button
+                        type="button"
+                        onClick={() => setShowScanner(true)}
+                        className="w-[min(34vw,136px)] h-[min(34vw,136px)] rounded-full bg-gradient-to-tr from-cyan-500 to-blue-600 hover:scale-105 active:scale-95 transition-all shadow-[0_0_35px_rgba(34,211,238,0.5)] flex flex-col items-center justify-center text-white space-y-1.5 group"
+                        aria-label="Scan QR Code"
+                      >
+                        <QrCode className="w-9 h-9 stroke-[2.2] text-white transition-transform group-hover:rotate-6 drop-shadow-[0_0_10px_rgba(34,211,238,0.85)]" />
+                        <span className="font-extrabold text-[11px] tracking-wider uppercase text-white drop-shadow-[0_0_8px_rgba(34,211,238,0.85)]">
+                          {lang === 'hi' ? 'स्कैन करें' : 'SCAN QR'}
+                        </span>
+                      </button>
+                    </div>
                   </div>
+                </div>
+
+                <div className="text-center space-y-1 max-w-xs">
+                  <h2 className="text-base sm:text-lg font-extrabold text-white tracking-tight">
+                    {lang === 'hi' ? 'पे करने से पहले, एक सेकंड रुको' : 'Verify Before Entering PIN'}
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    {lang === 'hi' 
+                      ? 'रिवर्स-चार्ज और फेक पेमेंट का ऑन-डिवाइस स्कैन।' 
+                      : 'Zero-server reverse-charge scam detection.'}
+                  </p>
+                </div>
+
+                {fileError && (
+                  <div className="w-full text-center text-xs text-rose-400 bg-rose-950/60 border border-rose-800/60 p-2 rounded-xl">
+                    {fileError}
+                  </div>
+                )}
+
+                {/* Secondary Fast Actions */}
+                <div className="w-full flex gap-2.5 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex-1 py-3 px-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-2xl text-xs font-semibold text-slate-200 flex items-center justify-center space-x-1.5 transition-colors"
+                  >
+                    <UploadCloud className="w-4 h-4 text-cyan-400 shrink-0" />
+                    <span>{lang === 'hi' ? 'फोटो चुनें' : 'Upload Image'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowManualInput(!showManualInput)}
+                    className="flex-1 py-3 px-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-2xl text-xs font-semibold text-slate-200 flex items-center justify-center space-x-1.5 transition-colors"
+                  >
+                    <FileText className="w-4 h-4 text-cyan-400 shrink-0" />
+                    <span>{showManualInput ? (lang === 'hi' ? 'फॉर्म छिपाएं' : 'Hide Form') : (lang === 'hi' ? 'टेक्स्ट पेस्ट करें' : 'Paste Text')}</span>
+                  </button>
+                </div>
+
+                {/* Intent Chips for Retail/Direct QR Scans */}
+                {uri && !analysis && (
+                  <div className="w-full bg-cyan-950/40 border border-cyan-800/50 rounded-2xl p-3 space-y-2">
+                    <div className="text-[11px] font-bold text-cyan-300">
+                      {lang === 'hi' ? 'आप यह भुगतान क्यों कर रहे हैं?' : 'Why are you making this payment?'}
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleIntentSelection('shopping')}
+                        className="p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-center text-[10px] text-slate-200 font-semibold flex flex-col items-center space-y-1"
+                      >
+                        <ShoppingBag className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>{lang === 'hi' ? 'सामान खरीदा' : 'Shopping'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleIntentSelection('receive')}
+                        className="p-2 rounded-xl bg-rose-950/40 hover:bg-rose-900/40 border border-rose-800/40 text-center text-[10px] text-rose-300 font-semibold flex flex-col items-center space-y-1"
+                      >
+                        <Coins className="w-3.5 h-3.5 text-rose-400" />
+                        <span>{lang === 'hi' ? 'पैसे पाने हैं' : 'To Receive'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleIntentSelection('urgency')}
+                        className="p-2 rounded-xl bg-amber-950/40 hover:bg-amber-900/40 border border-amber-800/40 text-center text-[10px] text-amber-300 font-semibold flex flex-col items-center space-y-1"
+                      >
+                        <Zap className="w-3.5 h-3.5 text-amber-400" />
+                        <span>{lang === 'hi' ? 'जल्दी में बोला' : 'Urgent Call'}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Example Presets Header */}
+                <div className="w-full pt-1">
+                  <div className="text-[11px] font-mono text-slate-400 uppercase text-center mb-1.5 tracking-wider">
+                    {lang === 'hi' ? 'उदाहरण चलाकर देखें:' : 'Try an example:'}
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {DEMO_PRESETS.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => applyPreset(p)}
+                        className="p-2.5 rounded-xl bg-white/[0.03] hover:bg-white/[0.08] border border-white/10 text-left transition-all flex flex-col justify-between space-y-1"
+                      >
+                        <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border inline-block w-fit ${p.tagColor}`}>
+                          {p.tag[lang] || p.tag.en}
+                        </span>
+                        <span className="text-[11px] font-semibold text-slate-200 leading-tight">
+                          {p.label[lang] || p.label.en}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Dropdown Manual Input */}
+                {showManualInput && (
+                  <div className="w-full bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-4 space-y-3">
+                    <div>
+                      <label className="block text-xs font-mono text-slate-400 mb-1">UPI Link / VPA</label>
+                      <input
+                        type="text"
+                        placeholder="upi://pay?pa=... or name@bank"
+                        value={uri}
+                        onChange={(e) => setUri(e.target.value)}
+                        className="w-full text-xs font-mono p-2.5 bg-black/40 border border-white/10 rounded-xl focus:outline-none focus:border-cyan-400 text-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-mono text-slate-400 mb-1">WhatsApp / SMS Context</label>
+                      <textarea
+                        rows={2}
+                        placeholder="e.g. advance Rs 5000 bhej diye hain, PIN dalo..."
+                        value={message}
+                        onChange={(e) => setMessage(e.target.value)}
+                        className="w-full text-xs p-2.5 bg-black/40 border border-white/10 rounded-xl focus:outline-none focus:border-cyan-400 text-white resize-none"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => runCheck()}
+                      className="w-full py-3 bg-gradient-to-r from-cyan-500 to-blue-600 text-black font-extrabold text-xs rounded-xl shadow-md hover:brightness-110 transition-all flex items-center justify-center space-x-1.5"
+                    >
+                      <span>{lang === 'hi' ? 'जांच करें' : 'Run Analysis'}</span>
+                      <ArrowRight className="w-4 h-4 text-black" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Zero Server Proof */}
+                <div className="text-[11px] text-slate-400 flex items-center justify-center space-x-1.5 font-mono pt-1">
+                  <Lock className="w-3 h-3 text-cyan-400" />
+                  <span>0 Servers · 0 Logs · 100% Client-Side Engine</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 2: SEEKHO */}
+        {activeTab === 'learn' && (
+          <div className="space-y-4">
+            
+            <div className="p-4 rounded-3xl bg-white/5 border border-white/10 space-y-3">
+              <div className="text-xs font-bold text-white uppercase tracking-wider font-mono">
+                {lang === 'hi' ? 'UPI Sentinel कैसे काम करता है:' : 'How Sentinel Works:'}
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="p-2.5 rounded-2xl bg-black/30 border border-white/5">
+                  <QrCode className="w-4 h-4 text-cyan-400 mx-auto mb-1" />
+                  <div className="text-[11px] font-bold text-white">{lang === 'hi' ? '1. स्कैन' : '1. Scan'}</div>
+                  <div className="text-[11px] text-slate-400">{lang === 'hi' ? 'कैमरा या फोटो' : 'Camera / Photo'}</div>
+                </div>
+
+                <div className="p-2.5 rounded-2xl bg-black/30 border border-white/5">
+                  <Lock className="w-4 h-4 text-cyan-400 mx-auto mb-1" />
+                  <div className="text-[11px] font-bold text-white">{lang === 'hi' ? '2. डिवाइस पर' : '2. On-Device'}</div>
+                  <div className="text-[11px] text-slate-400">{lang === 'hi' ? 'जीरो डेटा लीक' : 'Zero Data Leak'}</div>
+                </div>
+
+                <div className="p-2.5 rounded-2xl bg-black/30 border border-white/5">
+                  <CheckCircle2 className="w-4 h-4 text-cyan-400 mx-auto mb-1" />
+                  <div className="text-[11px] font-bold text-white">{lang === 'hi' ? '3. पुष्टि' : '3. Verify'}</div>
+                  <div className="text-[11px] text-slate-400">{lang === 'hi' ? 'असली प्राप्तकर्ता' : 'Real Payee'}</div>
                 </div>
               </div>
             </div>
-          </main>
+
+            <div className="border-b border-white/10 pb-2">
+              <h2 className="text-lg font-black text-white flex items-center space-x-2">
+                <BookOpen className="w-5 h-5 text-cyan-400" />
+                <span>{lang === 'hi' ? '5 सबसे बड़े यूपीआई स्कैम' : 'Top 5 UPI Scam Patterns'}</span>
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">
+                {lang === 'hi' ? 'स्कैमर्स के जाल और उनसे बचने के आसान नियम।' : 'Learn common traps and golden security rules.'}
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              {SCAM_ARCHIVES.map((item, idx) => (
+                <div key={idx} className="p-3.5 rounded-2xl bg-white/5 border border-white/10 space-y-2">
+                  <h3 className="text-xs sm:text-sm font-bold text-cyan-300">
+                    {item.title[lang] || item.title.en}
+                  </h3>
+                  <div className="text-xs text-slate-300 leading-relaxed">
+                    <strong className="text-white">{lang === 'hi' ? 'जाल: ' : 'Trap: '}</strong> 
+                    {item.victim[lang] || item.victim.en}
+                  </div>
+                  <div className="text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 p-2.5 rounded-xl font-medium">
+                    🛡️ <strong className="text-emerald-300">{lang === 'hi' ? 'बचाव: ' : 'Rule: '}</strong> 
+                    {item.rule[lang] || item.rule.en}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
 
-        {/* View 2: Deterministic Baseline Benchmark */}
-        {activeNav === 'threats' && (
-          <main className="p-8 space-y-6 max-w-7xl mx-auto w-full">
-            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-xs space-y-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-xl font-bold text-slate-900">Deterministic Synthetic Baseline (10 Fixtures)</h2>
-                  <p className="text-xs text-slate-500 mt-1">Evaluated across calibrated test fixtures loaded from shared <code>test_fixtures.json</code> schema.</p>
-                </div>
-                <span className="text-xs font-mono font-semibold px-3 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
-                  Exact Match: {benchmarkResult.accuracy}%
+        {/* TAB 3: EMERGENCY HELPLINE */}
+        {activeTab === 'emergency' && (
+          <div className="bg-white/5 backdrop-blur-2xl border border-white/10 rounded-3xl p-5 sm:p-6 space-y-5">
+            <div className="flex items-center space-x-3 text-rose-400">
+              <PhoneCall className="w-7 h-7 shrink-0" />
+              <div>
+                <h2 className="text-lg sm:text-xl font-black text-white">
+                  {lang === 'hi' ? 'राष्ट्रीय साइबर हेल्पलाइन (1930)' : 'National Cyber Helpline (1930)'}
+                </h2>
+                <span className="text-xs text-slate-400 font-mono">
+                  {lang === 'hi' ? 'तत्काल वित्तीय धोखाधड़ी रिपोर्टिंग' : 'Immediate Financial Fraud Reporting'}
                 </span>
               </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                  <div className="text-xs font-medium text-slate-500">Threat Precision</div>
-                  <div className="text-2xl font-extrabold text-slate-900 mt-1">{benchmarkResult.precision}%</div>
-                  <div className="text-[10px] text-slate-500 mt-1">{benchmarkResult.fp} False Alarms on Controls</div>
-                </div>
-                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                  <div className="text-xs font-medium text-slate-500">Attack Recall</div>
-                  <div className="text-2xl font-extrabold text-slate-900 mt-1">{benchmarkResult.recall}%</div>
-                  <div className="text-[10px] text-slate-500 mt-1">{benchmarkResult.fn} Reverse Charges Missed</div>
-                </div>
-                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                  <div className="text-xs font-medium text-slate-500">Exact Verdict Pass</div>
-                  <div className="text-2xl font-extrabold text-blue-600 mt-1">{benchmarkResult.accuracy}%</div>
-                  <div className="text-[10px] text-slate-500 mt-1">{benchmarkResult.passed} / {benchmarkResult.total} Matched Spec</div>
-                </div>
-                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                  <div className="text-xs font-medium text-slate-500">Client Execution Time</div>
-                  <div className="text-2xl font-extrabold text-emerald-600 mt-1">{evalLatency}ms</div>
-                  <div className="text-[10px] text-slate-400 mt-1">Synchronous pass</div>
-                </div>
-              </div>
-
-              <div className="border border-slate-200 rounded-2xl p-5 bg-[#FAFBFD]">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 font-mono mb-3">Confusion Matrix (Deception Label vs Engine Flag)</h3>
-                <div className="grid grid-cols-2 max-w-sm gap-2 text-center text-xs font-mono">
-                  <div className="p-3 bg-white border border-slate-200 rounded-xl">
-                    <span className="text-slate-400 text-[10px] block">True Positive (TP)</span>
-                    <span className="text-base font-bold text-emerald-700">{benchmarkResult.tp}</span>
-                  </div>
-                  <div className="p-3 bg-white border border-slate-200 rounded-xl">
-                    <span className="text-slate-400 text-[10px] block">False Positive (FP)</span>
-                    <span className="text-base font-bold text-slate-800">{benchmarkResult.fp}</span>
-                  </div>
-                  <div className="p-3 bg-white border border-slate-200 rounded-xl">
-                    <span className="text-slate-400 text-[10px] block">False Negative (FN)</span>
-                    <span className="text-base font-bold text-slate-800">{benchmarkResult.fn}</span>
-                  </div>
-                  <div className="p-3 bg-white border border-slate-200 rounded-xl">
-                    <span className="text-slate-400 text-[10px] block">True Negative (TN)</span>
-                    <span className="text-base font-bold text-emerald-700">{benchmarkResult.tn}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 font-mono mb-3">Live Fixture Comparison (Expected vs Actual)</h3>
-                <div className="divide-y divide-slate-100 border border-slate-200 rounded-2xl overflow-hidden bg-white text-xs">
-                  {benchmarkResult.details.map(item => (
-                    <div key={item.id} className="p-3 flex items-center justify-between hover:bg-slate-50">
-                      <div>
-                        <span className="font-mono text-slate-400 mr-2">#{String(item.id).padStart(2, '0')}</span>
-                        <span className="font-semibold text-slate-800">{item.scenario}</span>
-                      </div>
-                      <div className="flex items-center space-x-3 font-mono text-[11px]">
-                        <span className="text-slate-400">Exp: {item.expected_verdict}</span>
-                        <span className="text-slate-700">Act: {item.actual_verdict}</span>
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${item.isPass ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
-                          {item.isPass ? 'PASS' : 'FAIL'}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
             </div>
-          </main>
+
+            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+              {lang === 'hi'
+                ? 'अगर धोखे से खाते से पैसे कट चुके हैं, तो गोल्डन ऑवर (शुरुआती 1-2 घंटे) के अंदर कॉल करें। नोडल बैंक अधिकारी फ्रॉड खाते को तुरंत फ्रीज कर सकते हैं।'
+                : 'If funds were debited fraudulently, call within the Golden Hour (first 1-2 hours). Nodal bank officers can freeze recipient accounts.'}
+            </p>
+
+            <a
+              href="tel:1930"
+              className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black text-sm shadow-[0_0_25px_rgba(244,63,94,0.35)] flex items-center justify-center space-x-2 transition-all"
+            >
+              <PhoneCall className="w-4 h-4 animate-bounce" />
+              <span>{lang === 'hi' ? 'कॉल करें: 1930 (टोल-फ्री)' : 'Call 1930 (Toll Free)'}</span>
+            </a>
+
+            <div className="p-3.5 bg-black/40 rounded-2xl border border-white/10 space-y-1">
+              <span className="text-[11px] font-mono text-slate-400 block uppercase">
+                {lang === 'hi' ? 'आधिकारिक पोर्टल' : 'Official Portal'}
+              </span>
+              <a 
+                href="https://cybercrime.gov.in" 
+                target="_blank" 
+                rel="noreferrer"
+                className="text-xs font-bold text-cyan-400 underline flex items-center space-x-1"
+              >
+                <span>cybercrime.gov.in</span>
+                <span className="text-[10px]">↗</span>
+              </a>
+            </div>
+          </div>
         )}
 
-        {/* View 3: Session Evaluation Ledger */}
-        {activeNav === 'vectors' && (
-          <main className="p-8 space-y-6 max-w-7xl mx-auto w-full">
-            <div className="bg-white rounded-3xl border border-slate-200 shadow-xs p-6 space-y-4">
-              <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">Session Evaluation Ledger</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Captures evaluations run in this browser session only (Clean state initialized)</p>
-                </div>
-                <div className="flex space-x-2">
-                  {['all', 'flagged', 'benign'].map((t) => (
-                    <button 
-                      key={t} 
-                      onClick={() => setActiveTab(t)} 
-                      className={`px-3 py-1 rounded-lg text-xs capitalize cursor-pointer transition-colors ${
-                        activeTab === t ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100'
-                      }`}
-                    >
-                      {t}
-                    </button>
-                  ))}
-                </div>
-              </div>
+        {/* Localized Statutory Disclaimer */}
+        <footer className="mt-6 pt-3 border-t border-white/5 text-center text-[11px] text-slate-400 space-y-1">
+          <p>
+            {lang === 'hi'
+              ? 'स्वतंत्र सुरक्षा परामर्श उपयोगिता · NPCI, UPI, या किसी भी बैंक से संबद्ध नहीं।'
+              : 'Independent Advisory Utility · Not affiliated with NPCI, UPI, or banking institutions.'}
+          </p>
+          <p>
+            {lang === 'hi'
+              ? 'यह निष्कर्ष केवल एक ऑन-डिवाइस सुरक्षा अनुमान है और कोई वित्तीय गारंटी नहीं है।'
+              : 'Advisory output is a client-side disparity heuristic and not a financial guarantee.'}
+          </p>
+        </footer>
+      </main>
 
-              {filteredLogs.length === 0 ? (
-                <div className="py-12 text-center text-slate-400 text-xs">
-                  No evaluations recorded yet in this session. Trigger analysis from Sandbox to populate ledger.
-                </div>
-              ) : (
-                <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="text-slate-400 uppercase font-mono text-[10px] border-b border-slate-100">
-                      <th className="pb-3">Session ID</th>
-                      <th className="pb-3">Payee Label</th>
-                      <th className="pb-3">Payload Debit</th>
-                      <th className="pb-3">Context Text</th>
-                      <th className="pb-3">Engine Verdict</th>
-                      <th className="pb-3 text-right">Local Time</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {filteredLogs.map(row => (
-                      <tr key={row.id} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="py-3 font-mono text-slate-500">{row.id}</td>
-                        <td className="py-3 font-semibold text-slate-900">{row.payee}</td>
-                        <td className="py-3 font-bold text-slate-900">{formatAmount(row.amount)}</td>
-                        <td className="py-3 text-slate-600 max-w-xs truncate">{row.text || 'No context supplied'}</td>
-                        <td className="py-3">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            row.tone === 'critical' ? 'bg-red-50 text-red-700' :
-                            row.tone === 'caution' ? 'bg-amber-50 text-amber-700' :
-                            row.tone === 'neutral' ? 'bg-slate-100 text-slate-700' :
-                            'bg-emerald-50 text-emerald-700'
-                          }`}>
-                            {row.verdict}
-                          </span>
-                        </td>
-                        <td className="py-3 text-right font-mono text-slate-400">{row.time}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </main>
-        )}
+      {/* Floating 3-Tab Bottom Nav Dock */}
+      <nav className="fixed bottom-4 inset-x-0 mx-auto w-[92%] max-w-sm bg-slate-900/90 backdrop-blur-2xl border border-white/15 rounded-full p-1.5 flex items-center justify-between shadow-2xl z-40">
+        <button
+          type="button"
+          onClick={() => setActiveTab('scan')}
+          className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1.5 ${
+            activeTab === 'scan' ? 'bg-cyan-400 text-black shadow-lg shadow-cyan-400/30' : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <QrCode className="w-4 h-4 text-inherit" />
+          <span>{lang === 'hi' ? 'स्कैनर' : 'Scanner'}</span>
+        </button>
 
-        {/* View 4: Engine Rules Contract */}
-        {activeNav === 'settings' && (
-          <main className="p-8 space-y-6 max-w-7xl mx-auto w-full">
-            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-xs max-w-2xl space-y-6">
-              <div>
-                <h2 className="text-xl font-bold text-slate-900">Disparity Engine Rules Contract</h2>
-                <p className="text-xs text-slate-500 mt-1">Formal heuristic rules applied identically across CLI and Browser evaluators.</p>
-              </div>
+        <button
+          type="button"
+          onClick={() => setActiveTab('learn')}
+          className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1.5 ${
+            activeTab === 'learn' ? 'bg-cyan-400 text-black shadow-lg shadow-cyan-400/30' : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <BookOpen className="w-4 h-4 text-inherit" />
+          <span>{lang === 'hi' ? 'सीखें' : 'Learn'}</span>
+        </button>
 
-              <div className="space-y-4 text-xs">
-                <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                  <div>
-                    <div className="font-bold text-slate-800">Coercion Suppression Rule</div>
-                    <div className="text-slate-500 mt-0.5">Demotes send intent to INSUFFICIENT_CONTEXT on panic triggers (disconnected, power cut).</div>
-                  </div>
-                  <span className="px-2 py-1 rounded bg-blue-100 text-blue-700 font-bold font-mono">ENFORCED</span>
-                </div>
-
-                <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                  <div>
-                    <div className="font-bold text-slate-800">Duplicate Parameter Rejection</div>
-                    <div className="text-slate-500 mt-0.5">Rejects payload strings containing conflicting duplicate query keys.</div>
-                  </div>
-                  <span className="px-2 py-1 rounded bg-slate-200 text-slate-700 font-bold font-mono">STRICT</span>
-                </div>
-
-                <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                  <div>
-                    <div className="font-bold text-slate-800">Standard Indian & Western Number Formatting</div>
-                    <div className="text-slate-500 mt-0.5">Validates comma groupings (rejects malformed strings like 5,00).</div>
-                  </div>
-                  <span className="px-2 py-1 rounded bg-blue-100 text-blue-700 font-bold font-mono">VALIDATED</span>
-                </div>
-              </div>
-            </div>
-          </main>
-        )}
-      </div>
+        <button
+          type="button"
+          onClick={() => setActiveTab('emergency')}
+          className={`flex-1 py-2 rounded-full text-xs font-bold transition-all flex items-center justify-center space-x-1.5 ${
+            activeTab === 'emergency' ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/30' : 'text-slate-400 hover:text-rose-400'
+          }`}
+        >
+          <PhoneCall className="w-4 h-4 text-inherit" />
+          <span>{lang === 'hi' ? 'हेल्पलाइन' : 'Helpline'}</span>
+        </button>
+      </nav>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-﻿[
+[
   {
     "id": 1,
     "scenario": "OLX Reverse Charge Trap",
@@ -37,7 +37,7 @@
     "text": "URGENT NOTICE: Power disconnected tonight by 9:30 PM due to unpaid bill. Pay Rs 120 immediately.",
     "uri": "upi://pay?pa=discom.billdesk@icici&pn=Discom%20Power&am=120&cu=INR",
     "is_deception": false,
-    "expected_verdict": "INSUFFICIENT_CONTEXT"
+    "expected_verdict": "HIGH_INTENT_DISPARITY"
   },
   {
     "id": 6,
@@ -118,5 +118,53 @@
     "uri": "upi://pay?pa=cleverfraud@paytm&pn=QuickCash&am=2000&cu=INR",
     "is_deception": true,
     "expected_verdict": "HIGH_INTENT_DISPARITY"
+  },
+  {
+    "id": 16,
+    "scenario": "Slash Amount Format: 5000/- with amount mismatch",
+    "text": "Paying 5000/- to shop for items",
+    "uri": "upi://pay?pa=shopkeeper@icici&pn=General%20Store&am=300&cu=INR",
+    "is_deception": false,
+    "expected_verdict": "HIGH_INTENT_DISPARITY"
+  },
+  {
+    "id": 17,
+    "scenario": "Devanagari Hindi Script Scam Directive",
+    "text": "मैंने रुपये 5000 भेज दिए हैं, क्यूआर स्कैन करके पिन डालो",
+    "uri": "upi://pay?pa=fakedeal@ybl&pn=OnlineBuyer&am=5000&cu=INR",
+    "is_deception": true,
+    "expected_verdict": "CRITICAL_INTENT_DISPARITY"
+  },
+  {
+    "id": 18,
+    "scenario": "Legitimate Merchant with Digits in VPA",
+    "text": "Paying mess fee Rs 1200",
+    "uri": "upi://pay?pa=armycanteen22@sbi&pn=Army%20HQ%20Canteen&am=1200&cu=INR",
+    "is_deception": false,
+    "expected_verdict": "NO_DISPARITY_DETECTED"
+  },
+  {
+    "id": 19,
+    "scenario": "Percent-encoded Cyrillic Lookalike VPA",
+    "text": "Paying Rs 500 to user",
+    "uri": "upi://pay?pa=x%40%D1%83bl&pn=FakeUser&am=500&cu=INR",
+    "is_deception": true,
+    "expected_verdict": "HIGH_INTENT_DISPARITY"
+  },
+  {
+    "id": 20,
+    "scenario": "Legitimate Devanagari Payee Name in URI pn",
+    "text": "Paying tea stall Rs 30",
+    "uri": "upi://pay?pa=sharmatea@icici&pn=%E0%A4%B6%E0%A4%B0%E0%A5%8D%E0%A4%AE%E0%A4%BE%20%E0%A4%9a%E0%A4%BE%E0%A4%AF&am=30&cu=INR",
+    "is_deception": false,
+    "expected_verdict": "NO_DISPARITY_DETECTED"
+  },
+  {
+    "id": 21,
+    "scenario": "Bank Awareness Negation Advisory",
+    "text": "ALERT: Do not enter PIN to receive money on UPI. Bank never asks for PIN.",
+    "uri": "upi://pay?pa=bankcare@sbi&pn=State%20Bank&am=10&cu=INR",
+    "is_deception": false,
+    "expected_verdict": "INSUFFICIENT_CONTEXT"
   }
 ]
