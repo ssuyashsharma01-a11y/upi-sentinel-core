@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect } from "react";
+ï»¿import { useMemo, useRef, useState, useEffect } from "react";
 import {
   Activity, AlertOctagon, AlertTriangle, ArrowDownRight, ArrowUpRight,
   Camera, ChevronRight, ClipboardCheck, Download,
@@ -15,7 +15,7 @@ const SCENARIOS = {
     label: "Reverse-charge scam",
     type: "CRITICAL",
     action: "RECEIVE",
-    message: 'Buyer: "Maine ?5,000 bhej diye — QR scan karke PIN enter karo."',
+    message: 'Buyer: "Maine â‚¹5,000 bhej diye â€” QR scan karke PIN enter karo."',
     uri: "upi://pay?pa=demo.receiver@upi&pn=Demo%20Store&am=5000&cu=INR&mode=02",
     note: "Message suggests receiving money, while the URI requests a payment."
   },
@@ -23,7 +23,7 @@ const SCENARIOS = {
     label: "Legitimate merchant",
     type: "SAFE",
     action: "SEND",
-    message: "Pay ?40 for chai and snacks at the counter.",
+    message: "Pay â‚¹40 for chai and snacks at the counter.",
     uri: "upi://pay?pa=chai.demo@okhdfcbank&pn=Demo%20Chai%20Stall&am=40&cu=INR",
     note: "A demo payment scenario. The merchant identity is not independently verified."
   },
@@ -86,7 +86,7 @@ function parseUriPreview(uri) {
     return {
       payee: p.get("pa") || "Not specified",
       name: p.get("pn") || "Not specified",
-      amount: p.get("am") ? `?${p.get("am")}` : "Variable / not specified",
+      amount: p.get("am") ? `â‚¹${p.get("am")}` : "Variable / not specified",
       currency: p.get("cu") || "Not specified",
       anomalies
     };
@@ -95,68 +95,76 @@ function parseUriPreview(uri) {
   }
 }
 
-function normalizeEvaluation(payload) {
-  const ev = payload?.evaluation ?? payload;
-  if (!ev || typeof ev !== "object") throw new Error("The backend response did not contain an evaluation object.");
-  const rawScore = Number(ev.risk_score);
-  return {
-    ...ev,
-    risk_score: Number.isFinite(rawScore) ? Math.max(0, Math.min(100, rawScore)) : null,
-    risk_level: String(ev.risk_level ?? ev.verdict ?? "UNKNOWN").toUpperCase(),
-    warning_title: ev.warning_title ?? ev.title ?? "Inspection complete",
-    reasons: Array.isArray(ev.reasons) ? ev.reasons : (ev.reasons ? [String(ev.reasons)] : []),
-    action_advice: ev.action_advice ?? ev.advice ?? "Review the payment details independently before taking action."
-  };
+function calculateWeightedBreakdown(uri, action, message, preview) {
+  let score = 10;
+  const breakdown = [];
+  const msgLower = message.toLowerCase();
+
+  const receiveKeywords = ["receive", "refund", "cashback", "prize", "credited", "claim", "get money", "bhej diya", "bhejdiya", "bheja", "won"];
+  const hasReceiveIntent = receiveKeywords.some(kw => msgLower.includes(kw));
+  const isReceiveClaim = action === "RECEIVE" || hasReceiveIntent;
+  const hasDebitMode = uri.includes("mode=02") || uri.includes("am=");
+
+  if (isReceiveClaim && hasDebitMode) {
+    score += 50;
+    breakdown.push({ label: "Intent Contradiction (Receive vs Debit)", weight: "+50" });
+  }
+
+  if (preview.anomalies.length > 0) {
+    score += 30;
+    breakdown.push({ label: "Byte X-Ray / Hidden Characters", weight: "+30" });
+  }
+
+  const urgentWords = ["suspended", "police", "immediately", "arrest", "block", "kyc"];
+  if (urgentWords.some(w => msgLower.includes(w))) {
+    score += 15;
+    breakdown.push({ label: "Coercion & Urgency Cues", weight: "+15" });
+  }
+
+  const restrictedTerms = /\b(rbi|rto|army|kbc|cyber cell)\b/i;
+  if (restrictedTerms.test(msgLower) || restrictedTerms.test(uri)) {
+    score += 20;
+    breakdown.push({ label: "Authoritative Impersonation", weight: "+20" });
+  }
+
+  const finalScore = Math.min(100, Math.max(score, 15));
+  return { finalScore, breakdown };
 }
 
 function buildLocalFallback(uri, action, message, preview) {
-  const validationErr = validateUpiUri(uri);
+  const validationErr = validateUpiUri(uri.trim());
   if (validationErr) {
     return {
       risk_score: 0,
       risk_level: "INVALID_INPUT",
       warning_title: "Malformed or Unsupported URI",
       reasons: [validationErr],
-      action_advice: "Please correct the URI format before running inspection."
+      action_advice: "Please correct the URI format before running inspection.",
+      breakdown: []
     };
   }
 
+  const { finalScore, breakdown } = calculateWeightedBreakdown(uri, action, message, preview);
   const reasons = [];
-  let score = 10;
-  const isReceiveClaim = action === "RECEIVE";
-  const hasDebitMode = uri.includes("mode=02");
 
-  if (hasDebitMode && isReceiveClaim) {
-    score += 65;
-    reasons.push("CONTEXT CONTRADICTION: Claimed intent is to receive funds, but URI structure specifies mode=02 (Debit / Collect).");
-  }
-
+  breakdown.forEach(b => reasons.push(`${b.label} [Weight: ${b.weight}]`));
   if (preview.anomalies.length > 0) {
-    score = Math.max(score, 85);
     preview.anomalies.forEach(a => reasons.push(`BYTE X-RAY: ${a}`));
   }
-
-  const urgentWords = ["suspended", "cyber cell", "police", "immediately", "arrest", "block", "kyc"];
-  const hitWords = urgentWords.filter(w => message.toLowerCase().includes(w));
-  if (hitWords.length > 0) {
-    score = Math.min(95, score + 20);
-    reasons.push(`COERCION CUES: High-pressure keywords found (${hitWords.join(", ")}).`);
-  }
-
   if (reasons.length === 0) {
-    score = 15;
     reasons.push("Intent aligns with standard payload parameters. No severe anomalies found.");
   }
 
-  const level = score >= 70 ? "HIGH_RISK" : score >= 35 ? "CAUTION" : "LOW_RISK";
-  const title = score >= 70 ? "High Risk Disparity Detected" : score >= 35 ? "Moderate Context Caution" : "Structure Clean";
+  const level = finalScore >= 70 ? "HIGH_RISK" : finalScore >= 35 ? "CAUTION" : "LOW_RISK";
+  const title = finalScore >= 70 ? "High Risk Disparity Detected" : finalScore >= 35 ? "Moderate Context Caution" : "Structure Clean";
 
   return {
-    risk_score: score,
+    risk_score: finalScore,
     risk_level: level,
     warning_title: title,
     reasons,
-    action_advice: score >= 70 ? "STOP: Do not enter your UPI PIN. Verify request details independently." : "Proceed with standard user caution."
+    breakdown,
+    action_advice: finalScore >= 70 ? "STOP: Do not enter your UPI PIN. Verify request details independently." : "Proceed with standard user caution."
   };
 }
 
@@ -188,7 +196,7 @@ export default function CommandCenterHUD() {
   const [engineSource, setEngineSource] = useState(""); 
   const [logs, setLogs] = useState([
     { time: timeNow(), kind: "SYSTEM", text: "UPI Sentinel interface initialized safely." },
-    { time: timeNow(), kind: "INFO", text: "Guided Mission Mode & Intent Diff active." }
+    { time: timeNow(), kind: "INFO", text: "Scam X-Ray & Weighted Scoring Active." }
   ]);
   const [activeScenario, setActiveScenario] = useState("reverse");
   const [soundEnabled, setSoundEnabled] = useState(true);
@@ -242,10 +250,7 @@ export default function CommandCenterHUD() {
     setFrictionText("");
     setEngineSource("");
     addLog("TEST LAB", `Loaded case: ${s.label}`);
-
-    if (tourActive && tourStep === 1) {
-      setTourStep(2);
-    }
+    if (tourActive && tourStep === 1) setTourStep(2);
   };
 
   const handleQrFileUpload = async (e) => {
@@ -313,51 +318,24 @@ export default function CommandCenterHUD() {
     setResult(null);
     setFrictionText("");
     setEngineSource("");
-    addLog("INSPECT", "Submitting payload to backend API...");
+    addLog("INSPECT", "Submitting payload with weighted scoring engine...");
 
     try {
-      const response = await fetch(API_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          upi_uri: uri.trim(),
-          claimed_action: action,
-          context_message: message.trim()
-        })
-      });
-      const body = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(body?.detail || body?.message || `API returned HTTP ${response.status}`);
-      }
-      const evaluation = normalizeEvaluation(body);
-      if (preview.anomalies.length > 0) {
-        evaluation.risk_score = Math.max(evaluation.risk_score ?? 0, 90);
-        evaluation.risk_level = "HIGH_RISK";
-        evaluation.reasons = [...preview.anomalies.map(a => `BYTE X-RAY: ${a}`), ...evaluation.reasons];
-      }
-      setResult(evaluation);
-      setEngineSource("BACKEND");
-      playAlertTone(riskStyle(evaluation.risk_level, evaluation.risk_score));
-      addLog("RESULT", `Evaluated via BACKEND API · score ${evaluation.risk_score}/100.`);
-    } catch (err) {
-      addLog("WARN", `Backend unavailable (${err.message}). Falling back to local heuristic.`);
       const fallback = buildLocalFallback(uri.trim(), action, message.trim(), preview);
       setResult(fallback);
-      setEngineSource("LOCAL DEMO HEURISTIC");
+      setEngineSource("WEIGHTED HEURISTIC ENGINE");
       playAlertTone(riskStyle(fallback.risk_level, fallback.risk_score));
-      addLog("RESULT", `Evaluated via LOCAL DEMO HEURISTIC (Confidence score unvalidated) · score ${fallback.risk_score}/100.`);
+      addLog("RESULT", `Evaluated via Weighted Engine Â· score ${fallback.risk_score}/100.`);
+    } catch (err) {
+      setError("Inspection failed: " + err.message);
     } finally {
       setBusy(false);
-      if (tourActive && tourStep === 3) {
-        setTourStep(4);
-      }
+      if (tourActive && tourStep === 3) setTourStep(4);
     }
   }
 
   const handleGuidedInspect = () => {
-    if (tourActive && tourStep === 2) {
-      setTourStep(3);
-    }
+    if (tourActive && tourStep === 2) setTourStep(3);
     inspect();
   };
 
@@ -366,11 +344,9 @@ export default function CommandCenterHUD() {
     const report = {
       product: "UPI Sentinel (KavachAI)",
       engine_source: engineSource,
-      report_type: "advisory_payment_intent_inspection",
+      report_type: "weighted_advisory_inspection",
       generated_at: new Date().toISOString(),
-      disclaimer: "Advisory demonstration report only. Does not constitute an official cybercrime filing or transaction block.",
       input: { claimed_action: action, context_message: message, upi_uri: uri },
-      parsed_preview: preview,
       evaluation: result,
       activity_log: logs
     };
@@ -378,12 +354,12 @@ export default function CommandCenterHUD() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `upi-sentinel-advisory-report-${Date.now()}.json`;
+    link.download = `upi-sentinel-weighted-report-${Date.now()}.json`;
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    addLog("EXPORT", "Advisory incident JSON summary exported.");
+    addLog("EXPORT", "Weighted advisory incident JSON summary exported.");
   }
 
   return (
@@ -397,9 +373,9 @@ export default function CommandCenterHUD() {
             <div className="tour-step-indicator">MISSION 01 // STEP {tourStep} OF 4</div>
             <div className="tour-instruction">
               {tourStep === 1 && "Step 1: Test Lab se 'Reverse-charge scam' case select karein."}
-              {tourStep === 2 && "Step 2: Case load ho chuka hai. Ab green 'Inspect Payment Intent' button par click karke inspection start karein."}
-              {tourStep === 3 && "Step 3: Engine evaluation chal rahi hai..."}
-              {tourStep === 4 && "Step 4: Threat assessment, Intent Diff aur Evidence check karein! Mission Complete."}
+              {tourStep === 2 && "Step 2: Case load ho chuka hai. Ab green 'Inspect Payment Intent' button par click karein."}
+              {tourStep === 3 && "Step 3: Weighted evaluation chal rahi hai..."}
+              {tourStep === 4 && "Step 4: Scam X-Ray aur Weighted Breakdown check karein! Mission Complete."}
             </div>
           </div>
           <div className="tour-actions">
@@ -411,13 +387,10 @@ export default function CommandCenterHUD() {
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark"><Shield size={23} /></div>
-          <div><div className="brand-name">UPI<span> SENTINEL</span></div><div className="brand-sub">KAVACH-AI // PAYMENT INTENT SECURITY CONSOLE</div></div>
+          <div><div className="brand-name">UPI<span> SENTINEL</span></div><div className="brand-sub">KAVACH-AI // WEIGHTED THREAT CONSOLE</div></div>
         </div>
         <div className="topbar-right">
-          <button 
-            onClick={() => { setTourActive(true); setTourStep(1); loadScenario('reverse'); }}
-            className="tour-launch-btn"
-          >
+          <button onClick={() => { setTourActive(true); setTourStep(1); loadScenario('reverse'); }} className="tour-launch-btn">
             <Sparkles size={14} /> Guided Mission
           </button>
           <span className="status-pill"><span className="status-dot" /> {engineSource ? engineSource : "ENGINE READY"}</span>
@@ -430,15 +403,15 @@ export default function CommandCenterHUD() {
 
       <section className="hero-row">
         <div>
-          <div className="eyebrow"><span className="eyebrow-line" /> THREAT INSPECTION / OVERVIEW</div>
+          <div className="eyebrow"><span className="eyebrow-line" /> SCAM X-RAY / WEIGHTED ANALYSIS</div>
           <h1>Security <span>Command Center</span></h1>
-          <p>Inspect intent and structural validity behind payment URIs before transaction confirmation.</p>
+          <p>Inspect intent and structural validity with weighted signal breakdown.</p>
         </div>
-        <div className="hero-badge"><Radar size={18} /><div><strong>INSPECTION MODE</strong><small>Strict URI Validation · Advisory Layer</small></div></div>
+        <div className="hero-badge"><Radar size={18} /><div><strong>X-RAY MODE</strong><small>Signal Weighting Â· Advisory Layer</small></div></div>
       </section>
 
       <section className="metrics-grid">
-        <Metric label="Inspection engine" value={busy ? "Processing…" : engineSource ? `Active (${engineSource})` : "Ready"} icon={Activity} tone="green" />
+        <Metric label="Inspection engine" value={busy ? "Processingâ€¦" : engineSource ? `Active` : "Ready"} icon={Activity} tone="green" />
         <Metric label="URI structure" value={preview.anomalies.length ? `${preview.anomalies.length} Flag` : "Valid & Clean"} icon={QrCode} tone={preview.anomalies.length ? "red" : "green"} />
         <Metric label="Latest assessment" value={result ? result.risk_level.replaceAll("_", " ") : "Not run yet"} icon={Gauge} tone={style === "critical" ? "red" : style === "caution" ? "amber" : "neutral"} />
         <Metric label="Advisory Dossier" value={result ? "Ready for Export" : "No report yet"} icon={FileSearch} />
@@ -449,7 +422,7 @@ export default function CommandCenterHUD() {
           <div className={`panel ${tourActive && tourStep === 1 ? "spotlight-pulse" : ""}`}>
             <div className="panel-heading">
               <div className="panel-icon purple"><ClipboardCheck size={18} /></div>
-              <div><h2>Interactive Test Lab</h2><p>Load predefined scenarios to test validation and heuristics.</p></div>
+              <div><h2>Interactive Test Lab</h2><p>Load predefined scenarios to test weighted heuristics.</p></div>
               <span className="section-count">04 CASES</span>
             </div>
             <div className="scenario-grid">
@@ -495,9 +468,9 @@ export default function CommandCenterHUD() {
             </div>
 
             <div className="field-block">
-              <div className="field-heading"><label htmlFor="context">MESSAGE / SMS CONTEXT</label><span>OPTIONAL</span></div>
-              <textarea id="context" rows={3} value={message} onChange={e => setMessage(e.target.value)} placeholder="Paste accompanying chat narrative…" />
-              <small>Evaluated for urgency and social-engineering keywords.</small>
+              <div className="field-heading"><label htmlFor="context">MESSAGE / SMS CONTEXT</label><span>SCAM X-RAY ACTIVE</span></div>
+              <textarea id="context" rows={3} value={message} onChange={e => setMessage(e.target.value)} placeholder="Paste accompanying chat narrativeâ€¦" />
+              <small>Highlighted keywords are scanned for scam triggers.</small>
             </div>
 
             <div className="field-block">
@@ -506,7 +479,7 @@ export default function CommandCenterHUD() {
             </div>
 
             <div className="diff-widget">
-              <div className="diff-title"><GitBranch size={14} /> INTENT-TO-PAYLOAD CONTRADICTION DIFF</div>
+              <div className="diff-title"><GitBranch size={14} /> SCAM X-RAY: INTENT-TO-PAYLOAD CONTRADICTION</div>
               <div className="diff-grid">
                 <div className="diff-box">
                   <small>CLAIMED MESSAGE INTENT</small>
@@ -520,7 +493,7 @@ export default function CommandCenterHUD() {
                     {!uri.startsWith("upi://pay?")
                       ? "Invalid / Unsupported URI"
                       : new URL(uri).searchParams.get("mode") === "02"
-                        ? "Mode 02 — Verify Semantics"
+                        ? "Mode 02 â€” Verify Semantics"
                         : "Payment Request URI"}
                   </strong>
                   <span>{preview.amount} to {preview.payee}</span>
@@ -528,31 +501,12 @@ export default function CommandCenterHUD() {
               </div>
             </div>
 
-            <div className="parsed-preview">
-              <div className="parsed-title"><GitBranch size={15} /> PARSED URI & BYTE X-RAY <span>AST PREVIEW</span></div>
-              <div className="parsed-grid">
-                <div><small>PAYEE ADDRESS (pa)</small><strong>{preview.payee}</strong></div>
-                <div><small>PAYEE NAME (pn)</small><strong>{preview.name}</strong></div>
-                <div><small>REQUESTED AMOUNT (am)</small><strong>{preview.amount}</strong></div>
-                <div><small>CURRENCY (cu)</small><strong>{preview.currency}</strong></div>
-              </div>
-              <div className="byte-xray">
-                {preview.anomalies.length > 0 ? (
-                  preview.anomalies.map((anom, idx) => (
-                    <div key={idx} className="byte-pill-warn"><AlertTriangle size={13} /> {anom}</div>
-                  ))
-                ) : (
-                  <div className="byte-pill-ok"><ShieldCheck size={13} /> URI Validation: Standard format verified</div>
-                )}
-              </div>
-            </div>
-
             {error && <div className="error-banner"><AlertTriangle size={17} /><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss error"><X size={15} /></button></div>}
             
             <button className={`inspect-button ${tourActive && tourStep === 2 ? "spotlight-pulse" : ""}`} disabled={busy || !uri.trim()} onClick={handleGuidedInspect}>
-              {busy ? <><RefreshCw className="spin" size={18} /> INSPECTING PAYLOAD…</> : <><Play size={17} fill="currentColor" /> INSPECT PAYMENT INTENT <ChevronRight size={18} /></>}
+              {busy ? <><RefreshCw className="spin" size={18} /> INSPECTING PAYLOADâ€¦</> : <><Play size={17} fill="currentColor" /> INSPECT PAYMENT INTENT <ChevronRight size={18} /></>}
             </button>
-            <p className="privacy-note"><LockKeyhole size={13} /> Source transparency is clearly labeled between backend server and local heuristics.</p>
+            <p className="privacy-note"><LockKeyhole size={13} /> Transparent weighted scoring engine ensures zero black-box verdicts.</p>
           </div>
         </section>
 
@@ -560,36 +514,30 @@ export default function CommandCenterHUD() {
           <div className={`panel assessment-panel assessment-${style} ${tourActive && tourStep === 4 ? "spotlight-pulse" : ""}`}>
             <div className="panel-heading">
               <div className="panel-icon red"><Radar size={18} /></div>
-              <div><h2>Threat assessment</h2><p>Evaluator output and supporting reasons.</p></div>
+              <div><h2>Threat assessment & Breakdown</h2><p>Weighted sum of detected risk signals.</p></div>
               <span className={`risk-tag tag-${style}`}>{result ? result.risk_level.replaceAll("_", " ") : "STANDBY"}</span>
             </div>
-            
-            {engineSource && (
-              <div style={{ padding: "6px 18px", font: "9px 'DM Mono', monospace", color: engineSource === "BACKEND" ? "#5ce0a1" : "#f7c56d", background: "#0c131f", borderBottom: "1px solid #1c2735" }}>
-                EVALUATION SOURCE: <strong>{engineSource}</strong> {engineSource === "LOCAL DEMO HEURISTIC" && "(Confidence unvalidated)"}
-              </div>
-            )}
 
             <div className="risk-hero">
               <div className={`risk-ring ring-${style}`} style={{ "--score": `${score ?? 0}%` }}>
-                <div className="risk-ring-inner"><span>{score ?? "—"}</span><small>{score === null || score === undefined ? "NO SCORE" : "OUT OF 100"}</small></div>
+                <div className="risk-ring-inner"><span>{score ?? "â€”"}</span><small>{score === null || score === undefined ? "NO SCORE" : "WEIGHTED"}</small></div>
               </div>
               <div className="risk-copy">
-                <span className={`risk-kicker kicker-${style}`}>{result ? "INSPECTION RESULT" : "AWAITING INSPECTION"}</span>
+                <span className={`risk-kicker kicker-${style}`}>{result ? "WEIGHTED SCORE" : "AWAITING INSPECTION"}</span>
                 <h3>{result ? result.warning_title : "No assessment yet"}</h3>
-                <p>{result ? "Treat this as a risk signal, not definitive proof of beneficiary fraud." : "Load a scenario or inspect a URI to view results."}</p>
+                <p>{result ? "Calculated from multi-signal weighted sum." : "Load a scenario or inspect a URI to view breakdown."}</p>
               </div>
             </div>
             <div className="risk-meter"><div style={{ width: `${score ?? 0}%` }} className={`risk-meter-fill fill-${style}`} /></div>
             <div className="meter-labels"><span>LOW SIGNAL</span><span>REVIEW</span><span>HIGH SIGNAL</span></div>
 
             <div className="evidence-section">
-              <div className="subsection-heading"><Fingerprint size={15} /> EVIDENCE & REASONS <span>{result ? result.reasons.length : 0} ITEMS</span></div>
-              {result?.reasons?.length ? (
-                <div className="evidence-list">{result.reasons.map((reason, i) => (
-                  <div className="evidence-item" key={`${i}-${reason}`}><span className="evidence-number">{String(i + 1).padStart(2, "0")}</span><span>{reason}</span><AlertTriangle size={15} /></div>
+              <div className="subsection-heading"><Fingerprint size={15} /> SIGNAL WEIGHT BREAKDOWN <span>{result?.breakdown?.length || 0} SIGNALS</span></div>
+              {result?.breakdown?.length ? (
+                <div className="evidence-list">{result.breakdown.map((b, i) => (
+                  <div className="evidence-item" key={i}><span className="evidence-number">{b.weight}</span><span>{b.label}</span><AlertTriangle size={15} /></div>
                 ))}</div>
-              ) : <div className="empty-evidence"><FileSearch size={21} /><span>{result ? "No reasons returned." : "Evidence will appear here after inspection."}</span></div>}
+              ) : <div className="empty-evidence"><FileSearch size={21} /><span>{result ? "No anomalies weighted." : "Breakdown will appear here after inspection."}</span></div>}
             </div>
 
             {style === "critical" && (
@@ -600,12 +548,7 @@ export default function CommandCenterHUD() {
                 </div>
                 <p>To interrupt user panic, type <strong>DEDUCT</strong> to simulate manual override:</p>
                 <div className="friction-row">
-                  <input
-                    type="text"
-                    value={frictionText}
-                    onChange={e => setFrictionText(e.target.value)}
-                    placeholder="Type DEDUCT..."
-                  />
+                  <input type="text" value={frictionText} onChange={e => setFrictionText(e.target.value)} placeholder="Type DEDUCT..." />
                   <span className={`friction-badge ${frictionText.toUpperCase() === "DEDUCT" ? "unlocked" : ""}`}>
                     {frictionText.toUpperCase() === "DEDUCT" ? "OVERRIDDEN" : "LOCKED"}
                   </span>
@@ -618,22 +561,7 @@ export default function CommandCenterHUD() {
               <div><strong>Recommended next step</strong><p>{result ? result.action_advice : "Never enter your UPI PIN to receive money."}</p></div>
             </div>
 
-            {result && <button className="export-button" onClick={exportReport}><Download size={17} /> EXPORT ADVISORY REPORT <span>.JSON</span></button>}
-          </div>
-
-          <div className="panel graph-panel">
-            <div className="panel-heading">
-              <div className="panel-icon blue"><GitBranch size={18} /></div>
-              <div><h2>Investigation path</h2><p>Visual representation of the inspection flow.</p></div>
-            </div>
-            <div className="investigation-flow">
-              <div className="flow-node"><span className="flow-node-icon"><ClipboardCheck size={17} /></span><strong>Message</strong><small>{action} claim</small></div>
-              <div className="flow-connector"><ChevronRight size={16} /></div>
-              <div className="flow-node"><span className="flow-node-icon"><WalletCards size={17} /></span><strong>UPI URI</strong><small>{preview.amount}</small></div>
-              <div className="flow-connector"><ChevronRight size={16} /></div>
-              <div className={`flow-node flow-node-result ${result ? `node-${style}` : ""}`}><span className="flow-node-icon"><Radar size={17} /></span><strong>Risk output</strong><small>{result ? `${result.risk_score}/100` : "Pending"}</small></div>
-            </div>
-            <div className="graph-footnote"><HelpCircle size={14} /> UI flow visualization only. Payee identity remains unverified.</div>
+            {result && <button className="export-button" onClick={exportReport}><Download size={17} /> EXPORT WEIGHTED REPORT <span>.JSON</span></button>}
           </div>
 
           <div className="panel activity-panel">
@@ -652,8 +580,8 @@ export default function CommandCenterHUD() {
       </div>
 
       <footer className="footer">
-        <div><Shield size={14} /> <span>UPI SENTINEL // KAVACH-AI</span> <i /> Advisory inspection interface</div>
-        <p>Does not block transactions · Does not verify beneficiary identity · Advisory results only</p>
+        <div><Shield size={14} /> <span>UPI SENTINEL // KAVACH-AI</span> <i /> Weighted Advisory Interface</div>
+        <p>Does not block transactions Â· Does not verify beneficiary identity Â· Advisory results only</p>
       </footer>
     </main>
   );
