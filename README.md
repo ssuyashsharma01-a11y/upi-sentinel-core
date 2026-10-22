@@ -1,4 +1,4 @@
-﻿# 🛡️ UPI Sentinel
+# 🛡️ UPI Sentinel
 
 > **Client-Side, Zero-Server Payment-Intent Disparity & Anomaly Inspection Utility**
 
